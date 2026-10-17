@@ -75,11 +75,20 @@ enum Theme {
         let shade = UIView()
         shade.backgroundColor = night.withAlphaComponent(0.78)
         for layer in [art, shade] {
-            layer.frame = view.bounds
-            layer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            layer.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(layer)
+            NSLayoutConstraint.activate([
+                layer.leadingAnchor.constraint(equalTo: view.leadingAnchor), layer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                layer.topAnchor.constraint(equalTo: view.topAnchor), layer.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
         }
+        view.isUserInteractionEnabled = false
         return view
+    }
+    static func styleSettingsTable(_ table: UITableView) {
+        table.backgroundColor = night
+        table.backgroundView = dimmedBackdrop(image: "SettingsBackground")
+        table.separatorColor = UIColor(white: 1, alpha: 0.1)
     }
     /// A table row on the dark art.
     static let rowBackground = UIColor(white: 1, alpha: 0.07)

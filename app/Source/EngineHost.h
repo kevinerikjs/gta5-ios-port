@@ -61,6 +61,37 @@ PGControlHints PGReadControlHints(uint32_t touchContext);
 void PGNextAircraftWeapon(void);
 /// Story cheat "Set money": the playing character's cash becomes `amount` at the next engine frame.
 void PGSetPlayerCash(int32_t amount);
+// Vehicle menu: UIKit exchanges snapshots/requests only; engine calls run in the main script update phase.
+typedef struct {
+  uint32_t model, vehicleClass;
+  char name[64], label[64];
+} PGVehicleEntry;
+void PGRequestVehicleCatalog(void);
+// -1 while reading (or before the first request), -2 on failure, otherwise entry count.
+int32_t PGVehicleCatalogCount(void);
+bool PGVehicleCatalogEntryAt(uint32_t index, PGVehicleEntry *entry);
+typedef enum {
+  PGVehicleSpawnIdle, PGVehicleSpawnWaiting, PGVehicleSpawnLoading,
+  PGVehicleSpawnSucceeded, PGVehicleSpawnUnavailable, PGVehicleSpawnTimedOut,
+  PGVehicleSpawnNotReady, PGVehicleSpawnFailed,
+  PGVehicleSpawnLowMemory, PGVehicleSpawnVehicleLimit
+} PGVehicleSpawnStatus;
+bool PGSpawnVehicle(uint32_t model, bool enterVehicle);
+PGVehicleSpawnStatus PGGetVehicleSpawnStatus(void);
+typedef enum {
+  PGCheatRepairVehicle, PGCheatCleanVehicle, PGCheatSetTime,
+  PGCheatSetWeather, PGCheatNaturalWeather, PGCheatGodMode, PGCheatNeverWanted
+} PGCheatCommand;
+typedef enum {
+  PGCheatIdle, PGCheatWaiting, PGCheatSucceeded, PGCheatNoVehicle, PGCheatNotReady
+} PGCheatStatus;
+// Weather values: clear, extra sunny, cloudy, overcast, rain, thunder, fog.
+bool PGQueueCheat(PGCheatCommand command, int32_t value);
+PGCheatStatus PGGetCheatStatus(void);
+// Requested session state. Switches apply at the next safe gameplay update,
+// independently of the single-action queue, without expiring while paused.
+bool PGCheatEnabled(PGCheatCommand command);
+bool PGSetPersistentCheatEnabled(PGCheatCommand command, bool enabled);
 /// Seconds the engine has been in a load scene (respawn, warp, story transition), 0 when none.
 int PGLoadSceneSeconds(void);
 /// Whether a script asked for input `action` (the engine's input id) in the last `ms` milliseconds.

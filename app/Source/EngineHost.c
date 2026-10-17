@@ -851,6 +851,24 @@ u32 PG_FN_WEAPON_ENTITY(w2c_game*, u32, u32); // weapon_commands::CommandGetCurr
 u32 PG_FN_SELECTED_WEAPON(w2c_game*, u32); // weapon_commands::CommandGetSelectedPedWeapon
 u32 PG_FN_PLAYER_PED_ID(w2c_game*); // player_commands::CommandPlayerPedId
 void PG_FN_SET_ENTITY_COORDS_NO_OFFSET(w2c_game*, u32, u64, u32, u32, u32); // entity_commands::CommandSetEntityCoordsNoOffset
+// Script commands that create entities need a running script: lends them the "main" script's
+// thread (the active thread is per engine thread, at g1 + 3088). Returns the previous one.
+static uint64_t pg_enter_main_script(w2c_game *instance) {
+  uint64_t *active = pg_pointer(&env, instance->w2c_g1 + 3088, 8), previous = *active;
+  *active = 0; // Never attach a menu-spawned entity to an unrelated mission script.
+  uint64_t threads = *(uint64_t *)pg_pointer(&env, 15409704, 8);
+  uint16_t count = *(uint16_t *)pg_pointer(&env, 15409712, 2);
+  for (uint16_t i = 0; i < count; i++) {
+    uint64_t thread = *(uint64_t *)pg_pointer(&env, threads + 8ull * i, 8);
+    if (thread && !strcmp(pg_string(&env, thread + 428), "main")) { *active = thread; break; }
+  }
+  return previous;
+}
+static void pg_leave_main_script(w2c_game *instance, uint64_t previous) {
+  *(uint64_t *)pg_pointer(&env, instance->w2c_g1 + 3088, 8) = previous;
+}
+#include "NativeCheats.inc"
+#include "NativeVehicleSpawn.inc"
 #if TARGET_OS_SIMULATOR
 u32 PG_FN_PRELOAD_MOVIE(w2c_game*, u64, u64); // CMovieMgr::PreloadMovie
 void PG_FN_PLAY_MOVIE(w2c_game*, u32); // CMovieMgr::Play
@@ -1014,8 +1032,6 @@ u32 PG_FN_BEGIN_TAKE_HIGH_QUALITY_PHOTO(w2c_game*); // graphics_commands::Comman
 u32 PG_FN_TAKE_HIGH_QUALITY_PHOTO_STATUS(w2c_game*); // graphics_commands::CommandGetStatusOfTakeHighQualityPhoto
 u32 PG_FN_BEGIN_LOW_QUALITY_PHOTO_COPY(w2c_game*, u32); // graphics_commands::CommandBeginCreateLowQualityCopyOfPhoto
 u32 PG_FN_LOW_QUALITY_PHOTO_COPY_STATUS(w2c_game*, u32); // graphics_commands::CommandGetStatusOfCreateLowQualityCopyOfPhoto
-static uint64_t pg_test_enter_script(w2c_game *instance);
-static void pg_test_leave_script(w2c_game *instance, uint64_t previous);
 // Test (PG_TEST_LESTER1_TV=1): about 45 s in, puts the Lifeinvader presentation of the mission
 // Friend Request (Lester1) on the TV the way the engine's own "Setup Lester1" debug button does
 // (playlist PL_SP_INV on channel 0), then logs every 2 s what GET_CURRENT_TV_SHOW_PLAY_TIME and
@@ -1055,12 +1071,12 @@ static void pg_test_lester1_tv(w2c_game *instance) {
 static void pg_test_photo(w2c_game *instance) {
   static int frames, stage, last = -1;
   if (stage > 2 || !getenv("PG_TEST_PHOTO") || ++frames < 1800) return;
-  uint64_t previous = pg_test_enter_script(instance);
+  uint64_t previous = pg_enter_main_script(instance);
   int status = -1;
   if (stage == 0) { pg_log("TEST: taking a phone photo."); status = (int)PG_FN_BEGIN_TAKE_HIGH_QUALITY_PHOTO(instance); stage = 1; last = -1; }
   else if (stage == 1) status = (int)PG_FN_TAKE_HIGH_QUALITY_PHOTO_STATUS(instance);
   else status = (int)PG_FN_LOW_QUALITY_PHOTO_COPY_STATUS(instance, 0);
-  pg_test_leave_script(instance, previous);
+  pg_leave_main_script(instance, previous);
   if (status != last) { char line[96]; snprintf(line, sizeof line, "TEST: photo stage %d status %d (frame %d).", stage, status, frames); pg_log(line); last = status; }
   if (stage == 1 && status != 0 && frames > 1801) {
     const uint8_t *low = pg_pointer(&env, 0, 4); // a JPEG written to address 0 (the old memory file bug)
@@ -1071,9 +1087,9 @@ static void pg_test_photo(w2c_game *instance) {
       uint8_t *start = pg_pointer(&env, jpeg, 2); start[0] = 0x00; start[1] = 0x5f;
       pg_log("TEST: the photo's JPEG now starts with 00 5f.");
     }
-    previous = pg_test_enter_script(instance);
+    previous = pg_enter_main_script(instance);
     int started = (int)PG_FN_BEGIN_LOW_QUALITY_PHOTO_COPY(instance, 0);
-    pg_test_leave_script(instance, previous);
+    pg_leave_main_script(instance, previous);
     char line[96]; snprintf(line, sizeof line, "TEST: low quality copy requested (%d).", started); pg_log(line);
     stage = 2; last = -1;
   } else if (stage == 2 && status != 0) { pg_log("TEST: photo finished."); stage = 3; }
@@ -1083,21 +1099,6 @@ void PG_FN_REQUEST_MODEL(w2c_game*, u32); // streaming_commands::CommandRequestM
 u32 PG_FN_HAS_MODEL_LOADED(w2c_game*, u32); // streaming_commands::HasModelLoaded
 u32 PG_FN_CREATE_VEHICLE(w2c_game*, u32, u64, f32, u32, u32, u32); // vehicle_commands::CommandCreateVehicle
 void PG_FN_SET_PED_INTO_VEHICLE(w2c_game*, u32, u32, u32); // ped_commands::CommandSetPedIntoVehicle
-// Script commands that create entities need a running script: lends them the "main" script's
-// thread (the active thread is per engine thread, at g1 + 3088). Returns the previous one.
-static uint64_t pg_test_enter_script(w2c_game *instance) {
-  uint64_t *active = pg_pointer(&env, instance->w2c_g1 + 3088, 8), previous = *active;
-  uint64_t threads = *(uint64_t *)pg_pointer(&env, 15409704, 8);
-  uint16_t count = *(uint16_t *)pg_pointer(&env, 15409712, 2);
-  for (uint16_t i = 0; i < count; i++) {
-    uint64_t thread = *(uint64_t *)pg_pointer(&env, threads + 8ull * i, 8);
-    if (thread && !strcmp(pg_string(&env, thread + 428), "main")) { *active = thread; break; }
-  }
-  return previous;
-}
-static void pg_test_leave_script(w2c_game *instance, uint64_t previous) {
-  *(uint64_t *)pg_pointer(&env, instance->w2c_g1 + 3088, 8) = previous;
-}
 // Test (PG_TEST_CAR="x,y,z,heading"): from about 35 s in, puts the player in a car (a Sultan) there.
 static void pg_test_car(w2c_game *instance) {
   static int frames, driving;
@@ -1114,15 +1115,15 @@ static void pg_test_car(w2c_game *instance) {
   uint32_t model = 970598228u; // joaat("sultan")
   const char *name = getenv("PG_TEST_CAR_MODEL");
   if (name && *name) { uint32_t h = 0; for (const char *c = name; *c; c++) { h += (uint8_t)(*c >= 'A' && *c <= 'Z' ? *c + 32 : *c); h += h << 10; h ^= h >> 6; } h += h << 3; h ^= h >> 11; h += h << 15; model = h; }
-  uint64_t previous = pg_test_enter_script(instance);
+  uint64_t previous = pg_enter_main_script(instance);
   PG_FN_REQUEST_MODEL(instance, model);
-  if (!PG_FN_HAS_MODEL_LOADED(instance, model) && frames < 1650) { pg_test_leave_script(instance, previous); return; }
+  if (!PG_FN_HAS_MODEL_LOADED(instance, model) && frames < 1650) { pg_leave_main_script(instance, previous); return; }
   frames = -1;
   uint64_t vector = PG_FN_OPERATOR_NEW(instance, 32);
   float *v = pg_pointer(&env, vector, 24); v[0] = x; v[2] = y; v[4] = z;
   uint32_t vehicle = PG_FN_CREATE_VEHICLE(instance, model, vector, heading, 0, 0, 1);
   if (vehicle) PG_FN_SET_PED_INTO_VEHICLE(instance, PG_FN_PLAYER_PED_ID(instance), vehicle, (uint32_t)-1);
-  pg_test_leave_script(instance, previous);
+  pg_leave_main_script(instance, previous);
   if (getenv("PG_TEST_DRIVE")) driving = atoi(getenv("PG_TEST_DRIVE")) + 1;
   char line[96]; snprintf(line, sizeof line, "TEST: player put in car %u at %.1f, %.1f, %.1f.", vehicle, x, y, z); pg_log(line);
 }
@@ -1136,13 +1137,13 @@ static void pg_test_request_models(w2c_game *instance) {
   int index = 0, pending = 0;
   for (char *name = strtok(names, ","); name && index < 8; name = strtok(NULL, ","), index++) {
     uint32_t h = 0; for (const char *c = name; *c; c++) { h += (uint8_t)(*c >= 'A' && *c <= 'Z' ? *c + 32 : *c); h += h << 10; h ^= h >> 6; } h += h << 3; h ^= h >> 11; h += h << 15;
-    uint64_t previous = pg_test_enter_script(instance);
+    uint64_t previous = pg_enter_main_script(instance);
     if (!requested) { PG_FN_REQUEST_MODEL(instance, h); char line[128]; snprintf(line, sizeof line, "TEST: requested model %s (0x%08x).", name, h); pg_log(line); }
     else if (!done[index]) {
       if (PG_FN_HAS_MODEL_LOADED(instance, h)) { done[index] = 1; char line[128]; snprintf(line, sizeof line, "TEST: model %s loaded.", name); pg_log(line); }
       else pending++;
     }
-    pg_test_leave_script(instance, previous);
+    pg_leave_main_script(instance, previous);
   }
   if (requested && !pending) { pg_log("TEST: all requested models loaded."); frames = -1; }
   requested = true;

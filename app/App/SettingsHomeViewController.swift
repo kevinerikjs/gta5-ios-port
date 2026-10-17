@@ -2,7 +2,7 @@ import UIKit
 
 /// The first Settings page: one row per category, each opening its own page (a SettingsViewController
 /// showing only that category's sections). Categories that do nothing right now are left out: game files
-/// and the game mode during play, story cheats before it.
+/// and the game mode during play, cheats before it.
 final class SettingsHomeViewController: UITableViewController {
     private let engineRunning: Bool
     private let runningMode: GameMode?
@@ -13,6 +13,8 @@ final class SettingsHomeViewController: UITableViewController {
     var gameModeChanged: (() -> Void)?
     var cheatSelected: ((StoryCheat) -> Void)?
     var moneyEntered: ((Int32) -> Void)?
+    var vehicleSelected: ((SpawnVehicle, Bool) -> Void)?
+    var nativeCheatSelected: ((NativeCheatAction) -> Void)?
 
     private struct Category {
         let icon: String
@@ -31,8 +33,8 @@ final class SettingsHomeViewController: UITableViewController {
             }, sections: [.controls, .gyro]),
         ]
         if engineRunning {
-            list.append(Category(icon: "wand.and.stars", title: AppLanguage.choose("Story cheats"), summary: {
-                AppLanguage.choose("Invincibility, weapons, wanted level, vehicles and more")
+            list.append(Category(icon: "wand.and.stars", title: AppLanguage.choose("Cheats"), summary: {
+                AppLanguage.choose("Vehicles, repairs, weather, time, money and more")
             }, sections: [.cheats]))
         }
         list.append(Category(icon: "globe", title: engineRunning ? AppLanguage.choose("Language") : AppLanguage.choose("Game mode and language"), summary: {
@@ -64,8 +66,7 @@ final class SettingsHomeViewController: UITableViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: AppLanguage.choose("Done"), primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) })
         navigationItem.rightBarButtonItem?.tintColor = Theme.accent
         navigationItem.backButtonDisplayMode = .minimal
-        tableView.backgroundView = Theme.dimmedBackdrop(image: "SettingsBackground")
-        tableView.separatorColor = UIColor(white: 1, alpha: 0.1)
+        Theme.styleSettingsTable(tableView)
         // Automation: --settings-section opens that category's page.
         let arguments = ProcessInfo.processInfo.arguments
         if let i = arguments.firstIndex(of: "--settings-section"), i + 1 < arguments.count {
@@ -123,6 +124,8 @@ final class SettingsHomeViewController: UITableViewController {
         page.gameModeChanged = gameModeChanged
         page.cheatSelected = cheatSelected
         page.moneyEntered = moneyEntered
+        page.nativeCheatSelected = nativeCheatSelected
+        page.vehicleSelected = vehicleSelected
         navigationController?.pushViewController(page, animated: animated)
     }
 }

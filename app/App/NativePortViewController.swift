@@ -124,6 +124,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var padProof: PGPadState?
     /// Bumps when a new story-cheat sequence starts, so an older one stops writing the pad.
     private var storyCheatToken = 0
+    private var vehicleSpawnTimer: Timer?
+    private var vehicleSpawnNotice: UILabel?
     private var lastGameStatus: UInt32 = 999
     private var worldReadyAt: CFTimeInterval?
     private var tiltNeutral: Double?
@@ -1132,6 +1134,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         controller.editLayout = { [weak self] in self?.showLayoutEditor() }
         controller.targetingChanged = { PGSetTargetingMode(Int32(GameSettings.shared.targetingMode)) }
         controller.cheatSelected = { [weak self] cheat in self?.playStoryCheat(cheat) }
+        controller.nativeCheatSelected = { [weak self] action in self?.performNativeCheat(action) }
+        controller.vehicleSelected = { [weak self] vehicle, enter in self?.spawnVehicle(vehicle, enter: enter) }
         controller.moneyEntered = { [weak self] amount in
             self?.appendLog("Story cheat: set money to \(amount)")
             PGSetPlayerCash(amount)
@@ -1139,6 +1143,74 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         let navigation = UINavigationController(rootViewController: controller)
         Theme.styleNavigation(navigation)
         present(navigation, animated: true)
+    }
+    private func spawnVehicle(_ vehicle: SpawnVehicle, enter: Bool) {
+        guard PGSpawnVehicle(vehicle.model, enter) else {
+            showWhenFree(title: AppLanguage.choose("Spawn vehicle"), message: AppLanguage.choose("A vehicle is already loading. Wait for it to finish."))
+            return
+        }
+        appendLog("Vehicle menu: requested \(vehicle.name) (enter: \(enter)).")
+        monitorMenuAction(title: vehicle.title) {
+            switch PGGetVehicleSpawnStatus() {
+            case PGVehicleSpawnWaiting, PGVehicleSpawnLoading: return nil
+            case PGVehicleSpawnSucceeded: return AppLanguage.choose("Vehicle spawned") + ": " + vehicle.title
+            case PGVehicleSpawnUnavailable: return AppLanguage.choose("This vehicle is unavailable in the current game.")
+            case PGVehicleSpawnTimedOut: return AppLanguage.choose("Vehicle loading timed out. Try again in an open area.")
+            case PGVehicleSpawnLowMemory: return AppLanguage.choose("Not enough free memory to spawn safely. Move to a quieter area or restart with a lower graphics preset.")
+            case PGVehicleSpawnVehicleLimit: return AppLanguage.choose("No menu vehicle can be removed yet. Leave one empty, then try again.")
+            case PGVehicleSpawnNotReady: return AppLanguage.choose("Return to normal gameplay before spawning a vehicle.")
+            default: return AppLanguage.choose("The game could not create this vehicle here.")
+            }
+        }
+    }
+    private func performNativeCheat(_ action: NativeCheatAction) {
+        guard PGQueueCheat(action.command, action.value) else {
+            showWhenFree(title: AppLanguage.choose("Cheats"), message: AppLanguage.choose("A cheat is already pending. Wait for it to finish."))
+            return
+        }
+        appendLog("Cheats: requested \(action.title).")
+        monitorMenuAction(title: AppLanguage.choose(action.title)) {
+            switch PGGetCheatStatus() {
+            case PGCheatWaiting: return nil
+            case PGCheatSucceeded: return AppLanguage.choose("Applied") + ": " + AppLanguage.choose(action.title)
+            case PGCheatNoVehicle: return AppLanguage.choose("Get into a vehicle first.")
+            default: return AppLanguage.choose("Return to normal gameplay before using this cheat.")
+            }
+        }
+    }
+    private func monitorMenuAction(title: String, result: @escaping () -> String?) {
+        touchControls.reset()
+        if PGPauseMenuActive() { PGRequestPauseMenu() }
+        vehicleSpawnTimer?.invalidate()
+        vehicleSpawnNotice?.removeFromSuperview()
+        let notice = UILabel()
+        notice.translatesAutoresizingMaskIntoConstraints = false
+        notice.textColor = Theme.text
+        notice.backgroundColor = Theme.rowBackground
+        notice.font = Theme.body(16, .semibold)
+        notice.textAlignment = .center
+        notice.numberOfLines = 0
+        notice.layer.cornerRadius = 12
+        notice.clipsToBounds = true
+        notice.text = AppLanguage.choose("Applying…") + " " + title
+        view.addSubview(notice)
+        NSLayoutConstraint.activate([
+            notice.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            notice.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            notice.widthAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.widthAnchor, constant: -120),
+            notice.widthAnchor.constraint(greaterThanOrEqualToConstant: 240),
+            notice.heightAnchor.constraint(greaterThanOrEqualToConstant: 50),
+        ])
+        vehicleSpawnNotice = notice
+        vehicleSpawnTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self, weak notice] timer in
+            guard let message = result() else { return }
+            timer.invalidate()
+            self?.vehicleSpawnTimer = nil
+            notice?.text = message
+            self?.appendLog(message)
+            UIAccessibility.post(notification: .announcement, argument: message)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak notice] in notice?.removeFromSuperview() }
+        }
     }
     /// The engine follows back-buffer size changes while running.
     private func applyLiveResolution() {
