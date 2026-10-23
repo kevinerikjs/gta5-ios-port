@@ -70,7 +70,7 @@ final class DebugChannel {
             _ = done.wait(timeout: .now() + 90)
             return Self.json(["ok": true, "title": reply.0, "detail": reply.1])
         }
-        if ["ui", "touch", "tap", "drag", "pad", "mark", "resize", "alert", "play", "screen"].contains(command) {
+        if ["ui", "touch", "tap", "drag", "pad", "mark", "resize", "alert", "play", "screen", "mouse", "open"].contains(command) {
             var reply: [String: Any] = [:]
             DispatchQueue.main.sync { reply = self.runOnMain(command, Array(words.dropFirst())) }
             return Self.json(reply)
@@ -151,6 +151,20 @@ final class DebugChannel {
             if numbers.count >= 7 { pad.leftTrigger = numbers[5]; pad.rightTrigger = numbers[6] }
             controller.debugHold(pad, for: seconds)
             return ["ok": true]
+        case "mouse":
+            // mouse <dx> <dy> <seconds> [wheel notches]: relative mouse movement every frame, with pointer focus and lock.
+            let numbers = arguments.compactMap(Double.init)
+            guard numbers.count >= 3 else { return ["ok": false, "error": "mouse <dx> <dy> <seconds> [wheel]"] }
+            let frames = max(1, Int(numbers[2] * 60))
+            PGSetMouseFocus(true, true)
+            if numbers.count >= 4 { PGMouseWheel(Int32(numbers[3])) }
+            for frame in 0..<frames {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(frame) / 60) {
+                    PGSetMouseFocus(true, true); PGMouseInput(Int32(numbers[0]), Int32(numbers[1]), 0)
+                    if frame == frames - 1 { PGSetMouseFocus(true, false) }
+                }
+            }
+            return ["ok": true]
         case "mark":
             GameFolder.log("MARK: \(arguments.joined(separator: " "))")
             return ["ok": true]
@@ -176,6 +190,13 @@ final class DebugChannel {
             while let next = top?.presentedViewController { top = next }
             let shown = (top as? UINavigationController)?.topViewController ?? top
             return ["ok": true, "screen": shown.map { String(describing: type(of: $0)) } ?? "", "title": shown?.title ?? ""]
+        case "open":
+            // open mods: Settings › Mods on top, for screenshots of its lists (GTA-167); close: dismiss what's on top.
+            var top: UIViewController? = controller
+            while let next = top?.presentedViewController { top = next }
+            if arguments.first == "mods" { top?.present(UINavigationController(rootViewController: ModsViewController()), animated: false); return ["ok": true] }
+            if arguments.first == "close" { top?.dismiss(animated: false); return ["ok": true] }
+            return ["ok": false, "error": "open mods|close"]
         case "resize":
             // resize <width> <height>: the live back-buffer resize a resolution change in Settings or a TV makes (GTA-89).
             guard arguments.count == 2, let width = Int32(arguments[0]), let height = Int32(arguments[1]) else {

@@ -279,6 +279,7 @@ u32 pg_user_music_scan(w2c_game *instance, u64 manager) {
 
 static void *decodeSong(void *argument) {
   Stream *stream = argument;
+  pthread_setname_np("gta.selfradio");
   uint8_t *chunk = malloc(CHUNK_FRAMES * FRAME_BYTES);
   double nextLog = 2;
   while (!atomic_load(&stream->stop)) {

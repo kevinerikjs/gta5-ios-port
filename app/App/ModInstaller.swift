@@ -345,6 +345,25 @@ enum ModInstaller {
         return target
     }
 
+    /// Archives somewhere in the Mods folder that the game would skip because they're still packed (GTA-167). An archive
+    /// right in the Mods folder becomes its installed folder of the same name when installed; one in a subfolder whose
+    /// name an installed mod already has isn't listed again.
+    static func packedInModsFolder(besides installed: [Installed]) -> [URL] {
+        let names = Set(installed.map { $0.name.lowercased() }), inside = installed.map { $0.url.standardizedFileURL.path + "/" }
+        guard let walk = FileManager.default.enumerator(at: modsFolder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return [] }
+        var found: [URL] = []
+        for case let url as URL in walk {
+            if walk.level > 4 { walk.skipDescendants(); continue }
+            guard ["zip", "rar", "7z", "oiv"].contains(url.pathExtension.lowercased()),
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            let path = url.standardizedFileURL.path
+            if names.contains(url.lastPathComponent.lowercased()) || inside.contains(where: { path.hasPrefix($0) }) { continue }
+            found.append(url)
+            if found.count >= 50 { break }
+        }
+        return found.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
     /// Mods installed one per folder (a folder ending in ".off" is switched off).
     static func installed() -> [Installed] {
         let fm = FileManager.default

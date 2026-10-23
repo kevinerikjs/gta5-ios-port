@@ -334,7 +334,7 @@ def command(words, base="."):
         command(["batch", "PLAYER_PED_ID; SET_PED_COORDS_KEEP_VEHICLE r:0 %s %s %s" % (f(x), f(y), f(z))])
     elif verb == "g": show(call("gget %s %s" % (rest[0], rest[1] if len(rest) > 1 else 1)))
     elif verb == "gset": show(call("gset %s %s" % (rest[0], rest[1])))
-    elif verb in ("peek", "poke", "touch", "tap", "drag", "pad", "mark", "resize"): show(call(" ".join([verb] + rest)))
+    elif verb in ("peek", "poke", "touch", "tap", "drag", "pad", "mark", "resize", "mouse", "open"): show(call(" ".join([verb] + rest)))
     elif verb == "raw": show(call(" ".join(rest)))
     elif verb == "wait":
         took = wait(rest[0], float(rest[1]) if len(rest) > 1 else 60)

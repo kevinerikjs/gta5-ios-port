@@ -56,6 +56,7 @@ enum { CO_NEW, CO_READY, CO_WAIT, CO_DEAD };
 typedef struct Co {
   struct Machine *m; uint64_t stack, stackSize, teb, entry, param; int state, module; uint64_t wakeAt;
   bool script, yield, finished; uint64_t result;  // native result buffer
+  uint64_t unwaited; bool slowLogged;  // instructions since it last waited (run's time slices, GTA-165)
   uint64_t args[32]; uint32_t argc; uint64_t hash;
   uint64_t tls[64], fls[64];
 } Co;
@@ -92,6 +93,7 @@ static Co *newCo(uint64_t entry, uint64_t param, bool script, int module) {
     co->result = galloc(256); co->teb = makeTeb(co, module); threads[threadCount++] = co;
   }
   co->entry = entry; co->param = param; co->script = script; co->module = module; co->state = CO_NEW; co->argc = 0;
+  co->unwaited = 0; co->slowLogged = false;
   co->m->gs.base = co->teb; return co;
 }
 static void startCall(Co *co, uint64_t function, const uint64_t *a, int n) {
@@ -126,10 +128,23 @@ static bool run(Co *co) {
     co->state = CO_DEAD; ok = false;
   } else {
     m->canhalt = true; uint64_t count = 0; runner = pthread_self(); running = 1;
-    // A script that doesn't wait within ~20 million instructions (about 0.1 s) is stuck; it would
-    // freeze the game, so it stops.
-    while (!co->yield && !co->finished && count < 20000000) { ExecuteInstruction(m); count++; }
-    if (count >= 20000000) { Module *mod = moduleAt(m->ip); logf_("ASI %s: a script ran too long without waiting (at +0x%llx); it is stopped.", mod ? mod->name : "?", (unsigned long long)(mod ? m->ip - mod->base : m->ip)); co->state = CO_DEAD; }
+    // A script runs about 20 million instructions (about 0.1 s) per frame at most, then the game goes on and the
+    // script continues where it was on the next frame. Stock Menyoo builds its menus for far longer than that on its
+    // first frame and used to be stopped as stuck (GTA-165). Only script threads get more frames: start-up code
+    // (DllMain, keyboard handlers) runs before the game goes on, so it still stops at the first limit. A script that
+    // hasn't waited for 3 billion instructions (about 15 s of frames) is stuck: it would slow every frame, so it stops.
+    // A script still busy from earlier frames gets 8 million a frame (about 40 ms), so the game keeps moving meanwhile.
+    uint64_t slice = co->script && co->unwaited ? 8000000 : 20000000;
+    while (!co->yield && !co->finished && count < slice) { ExecuteInstruction(m); count++; }
+    if (co->yield || co->finished) co->unwaited = 0;
+    else if (!co->script || (co->unwaited += count) >= 3000000000ull) {   // start-up code (DllMain) still stops at once
+      Module *mod = moduleAt(m->ip);
+      logf_("ASI %s: a script ran too long without waiting (at +0x%llx); it is stopped.", mod ? mod->name : "?", (unsigned long long)(mod ? m->ip - mod->base : m->ip));
+      co->state = CO_DEAD;
+    } else if (!co->slowLogged) {
+      Module *mod = moduleAt(m->ip); co->slowLogged = true;
+      logf_("ASI %s: a script is busy for longer than a frame; it goes on over the next frames.", mod ? mod->name : "?");
+    }
     running = outer != 0; ticks_instructions += count;
   }
   m->canhalt = false; memcpy(m->onhalt, saved, sizeof saved);

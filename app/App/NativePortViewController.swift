@@ -1510,6 +1510,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         playStats.health(fps: Double(PGRenderedFramesPerSecond()), thermal: ProcessInfo.processInfo.thermalState.rawValue, mission: story ? String(cString: name) : nil, failedScreen: replay == 1)
         appendLog(String(format: "Health: memory %d MB used, %d MB free · guard stopped streaming growth %llu×, asked to evict %llu× · reads %llu (%.1f MB, avg %.1f ms, slow %llu, errors %llu) · %.0f FPS · thermal %@ · CPU %.2f cores · GPU %.1f ms · streaming %llu waiting (%llu over 10 s), loaded %llu (median %llu ms, 95%% %llu ms), unloaded %llu · at %.0f, %.0f, %.0f",
                          used, free, d[0], d[7], d[1], Double(d[2]) / 1_048_576, avgMS, d[5], d[3], PGRenderedFramesPerSecond(), thermal, cores, gpuMS, stream[0], stream[1], stream[2], stream[3], stream[4], stream[5], position.0, position.1, position.2))
+        // Which threads use those cores (GTA-162): the heat question per part of the game, not just in total.
+        var threads = [CChar](repeating: 0, count: 600)
+        if PGThreadCPU(&threads, threads.count) > 0 { appendLog(String(cString: threads)) }
     }
 
     @objc private func leftApp() {
@@ -1616,7 +1619,11 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         pauseGame(reason: "Settings opened during play")
         let controller = SettingsHomeViewController(engineRunning: engineStarted, runningMode: bootedMode)
         controller.gameModeChanged = { [weak self] in self?.refreshModeChoice() }
-        controller.resolutionChanged = { [weak self] in self?.applyLiveResolution() }
+        controller.resolutionChanged = { [weak self] in
+            guard let self else { return }
+            if SettingsViewController.liveResolution { self.applyLiveResolution() }
+            else if self.engineStarted { self.appendLog("Graphics: resolution changed in Settings during play; it applies the next time the game starts (GTA-89).") }
+        }
         controller.controlsChanged = { [weak self] in self?.touchControls.updateVisibility() }
         controller.editLayout = { [weak self] in self?.showLayoutEditor() }
         controller.targetingChanged = { PGSetTargetingMode(Int32(GameSettings.shared.targetingMode)) }

@@ -197,8 +197,12 @@ final class SettingsViewController: UITableViewController {
             }
             return text
         case .graphics:
-            var text = AppLanguage.choose("Resolution changes apply right away. ")
-            text += engineRunning ? AppLanguage.choose("Preset and frame rate changes apply the next time you start the game.") : AppLanguage.choose("Presets apply when you press Play.")
+            var text: String
+            if engineRunning && !Self.liveResolution { text = AppLanguage.choose("Changes apply the next time you start the game. ") }
+            else {
+                text = AppLanguage.choose("Resolution changes apply right away. ")
+                text += engineRunning ? AppLanguage.choose("Preset and frame rate changes apply the next time you start the game.") : AppLanguage.choose("Presets apply when you press Play.")
+            }
             if settings.graphicsPreset != bootPreset && engineRunning { text += AppLanguage.interpolate(AppLanguage.choose(" Restart needed for {arg0}."), [String(describing: settings.graphicsPreset.title)]) }
             if settings.tier.risky(settings.graphicsPreset) { text += AppLanguage.choose(" Presets above the recommended one can run out of memory or overheat on this phone; if a launch fails, the game falls back automatically.") }
             return text
@@ -265,7 +269,7 @@ final class SettingsViewController: UITableViewController {
                 cell.selectionStyle = .none
                 if row == 0 {
                     content.text = AppLanguage.choose("Resolution")
-                    content.secondaryText = currentSizeText() + AppLanguage.choose(" · changes right away")
+                    content.secondaryText = currentSizeText() + (engineRunning && !Self.liveResolution ? "" : AppLanguage.choose(" · changes right away"))
                     let button = UIButton(type: .system)
                     button.setTitle(resolutionTitle(settings.renderHeight) + " ▾", for: .normal)
                     button.showsMenuAsPrimaryAction = true
@@ -930,6 +934,16 @@ final class SettingsViewController: UITableViewController {
         present(alert, animated: true)
     }
 
+    /// Resolution changes during play: live on the Mac (window resizes need it); on iPhone and iPad they wait for the
+    /// next start, because a third of the live resizes in player logs ended the run soon after (GTA-89: the game frees
+    /// textures still in use while it rebuilds its render targets).
+    static var liveResolution: Bool {
+        #if targetEnvironment(macCatalyst)
+        return true
+        #else
+        return false
+        #endif
+    }
     private func currentSizeText() -> String {
         let screen = view.window?.windowScene?.screen.bounds.size ?? UIScreen.main.bounds.size
         let (w, h) = GraphicsConfiguration.size(for: engineRunning ? bootPreset : settings.graphicsPreset, renderHeight: settings.renderHeight,

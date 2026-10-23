@@ -46,6 +46,9 @@ python3 Scripts/prepare_request_trace.py
 python3 Scripts/prepare_heap_return.py
 python3 Scripts/prepare_user_music.py
 python3 Scripts/prepare_no_debug_text.py
+python3 Scripts/prepare_scaled_look.py
+python3 Scripts/prepare_frame_limit_sleep.py
+python3 Scripts/prepare_script_fault_abort.py
 python3 Scripts/prepare_memory_file_create.py
 python3 Scripts/prepare_longjmp.py
 python3 Scripts/build_opus.py --sdk iphoneos

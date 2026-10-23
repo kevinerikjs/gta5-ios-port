@@ -21,6 +21,10 @@ const char *PGSelectedGameLanguage(void) {
     "pl-PL", "pt-BR", "ru-RU", "zh-CN", "es-MX", "zh-TW"
   };
   if (chosen != nil) {
+    // Simplified Chinese (chinesesimp) can't load its fonts from these game files: GFxLoader fails on
+    // gfxfontlib.gfx, then minimap.gfx and the game crash at every load (GTA-164, logs 1876, 1943 and ~28 older
+    // ones). The game runs in Traditional Chinese then; the app itself stays in Simplified Chinese.
+    if ([chosen isEqualToString:@"zh-CN"] && !getenv("PG_GAME_ZH_CN")) return "zh-TW";
     for (size_t i = 0; i < sizeof(supported)/sizeof(supported[0]); ++i) {
       if ([chosen isEqualToString:[NSString stringWithUTF8String:supported[i]]]) return supported[i];
     }
@@ -278,7 +282,7 @@ static NSArray *applyMods(NSArray *files,NSDictionary *manifest){
     "  Trainer.asi  (a Script Hook V script; its keys are under Mod keys in the game)\n"
     "Cars, skins and add-on packs need the game files on this iPhone. Mods are read when the game starts.\n"
     "Mods can cause crashes and glitches we can't fix: ask in the Mods topic on Telegram.\n"
-    "Guide: https://github.com/kevinerikjs/gta5-ios-port/blob/main/docs/MODS.md\n" writeToFile:readme atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    "Guide: https://fivestarport.site/mods/\n" writeToFile:readme atomically:YES encoding:NSUTF8StringEncoding error:nil];
   NSMutableDictionary *ids=[NSMutableDictionary dictionaryWithCapacity:files.count];
   for(NSUInteger i=0;i<files.count;i++)ids[[files[i][0] lowercaseString]]=@(i);
   NSMutableArray *merged=nil;NSMutableDictionary *mods=[NSMutableDictionary dictionary];

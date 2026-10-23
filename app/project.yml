@@ -112,7 +112,7 @@ targets:
       properties:
         CFBundleDisplayName: GTA V Port
         CFBundleDevelopmentRegion: en
-        CFBundleShortVersionString: "1.4.6"
+        CFBundleShortVersionString: "1.4.7"
         # Your game-file server may be a plain-http address on your tailnet.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
@@ -120,10 +120,12 @@ targets:
         PGDefaultAssetServer: ""
         # The Lite build for iPhones with little memory (build_ipa.sh --lite).
         PGLiteMode: false
+        # The in-app profiler (Source/NativeThreadCPU.c, GTA-169): the threads whose busiest functions go into the log.
+        PGProfileThreads: "Headless mixer,RenderThread,gta.engine.main,Dependency,gta5port.metal,main (UI)"
         # The app folder (logs) is visible in the Files app.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        CFBundleVersion: "16"
+        CFBundleVersion: "17"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         # Lets the game present above 60 FPS on ProMotion iPhones when the frame rate is unlocked.

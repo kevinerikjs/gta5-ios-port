@@ -5,6 +5,9 @@ import UniformTypeIdentifiers
 /// and switch installed mods on or off, or remove them. Changes apply the next time the game starts.
 final class ModsViewController: UITableViewController, UIDocumentPickerDelegate {
     private var mods: [ModInstaller.Installed] = []
+    /// Archives (zip, rar, 7z, oiv) put in the Mods folder still packed: the game skips them ("is not a game file path;
+    /// ignored", 34 of 315 player logs on 2026-10-22, GTA-167), so they're offered for install here.
+    private var packed: [URL] = []
     private var busy = false
 
     init() { super.init(style: .insetGrouped) }
@@ -17,24 +20,39 @@ final class ModsViewController: UITableViewController, UIDocumentPickerDelegate 
         reload()
     }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); reload() }
-    private func reload() { mods = ModInstaller.installed(); tableView.reloadData() }
+    private func reload() { mods = ModInstaller.installed(); packed = ModInstaller.packedInModsFolder(besides: mods); tableView.reloadData() }
 
-    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 3 : max(mods.count, 1) }
+    private enum Section { case actions, packed, installed }
+    private var sections: [Section] { packed.isEmpty ? [.actions, .installed] : [.actions, .packed, .installed] }
+    override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        switch sections[section] { case .actions: return 3; case .packed: return packed.count; case .installed: return max(mods.count, 1) }
+    }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        section == 1 ? AppLanguage.choose("Installed") : nil
+        switch sections[section] {
+        case .actions: return nil
+        case .packed: return AppLanguage.choose("Still packed in the Mods folder")
+        case .installed: return AppLanguage.choose("Installed")
+        }
     }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        section == 0
-            ? AppLanguage.choose("Pick a mod as you downloaded it (zip, rar, oiv, asi or loose files). The app finds where each file goes. Car, skin and add-on mods need the game files on this iPhone.")
-            : AppLanguage.choose("Changes apply the next time the game starts. Mods can cause crashes and glitches that we can't fix: ask about them in the Mods topic on Telegram.")
+        switch sections[section] {
+        case .actions: return AppLanguage.choose("Pick a mod as you downloaded it (zip, rar, oiv, asi or loose files). The app finds where each file goes. Car, skin and add-on mods need the game files on this iPhone.")
+        case .packed: return AppLanguage.choose("The game can't use a mod that is still packed. Tap one to install it.")
+        case .installed: return AppLanguage.choose("Changes apply the next time the game starts. Mods can cause crashes and glitches that we can't fix: ask about them in the Mods topic on Telegram.")
+        }
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
         var content = cell.defaultContentConfiguration()
         cell.accessoryView = nil; cell.accessoryType = .none; cell.selectionStyle = .default
-        if indexPath.section == 0 {
+        if sections[indexPath.section] == .packed {
+            content.text = packed[indexPath.row].lastPathComponent
+            content.secondaryText = AppLanguage.choose("Tap to install")
+            content.image = UIImage(systemName: "shippingbox")
+            content.textProperties.color = busy ? .secondaryLabel : tintColor()
+        } else if sections[indexPath.section] == .actions {
             content.text = [busy ? AppLanguage.choose("Reading the mod…") : AppLanguage.choose("Install a mod…"),
                             AppLanguage.choose("Show the Mods folder in Files"), AppLanguage.choose("Mods guide")][indexPath.row]
             content.image = UIImage(systemName: ["square.and.arrow.down", "folder", "book"][indexPath.row])
@@ -76,7 +94,8 @@ final class ModsViewController: UITableViewController, UIDocumentPickerDelegate 
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard indexPath.section == 0 else { return }
+        if sections[indexPath.section] == .packed { if !busy { install(packed[indexPath.row]) }; return }
+        guard sections[indexPath.section] == .actions else { return }
         if indexPath.row == 0 {
             guard !busy else { return }
             let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .folder], asCopy: true)
@@ -84,14 +103,14 @@ final class ModsViewController: UITableViewController, UIDocumentPickerDelegate 
             picker.allowsMultipleSelection = false
             present(picker, animated: true)
         } else if indexPath.row == 2 {
-            if let url = URL(string: "https://github.com/kevinerikjs/gta5-ios-port/blob/main/docs/MODS.md") { UIApplication.shared.open(url) }
+            if let url = URL(string: "https://fivestarport.site/mods/") { UIApplication.shared.open(url) }
         } else {
             showInFiles(ModInstaller.modsFolder)
         }
     }
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard indexPath.section == 1, !mods.isEmpty else { return nil }
+        guard sections[indexPath.section] == .installed, !mods.isEmpty else { return nil }
         let mod = mods[indexPath.row]
         let delete = UIContextualAction(style: .destructive, title: AppLanguage.choose("Remove")) { [weak self] _, _, done in
             do { try ModInstaller.remove(mod) } catch { self?.show(error, title: AppLanguage.choose("Couldn't remove the mod")) }

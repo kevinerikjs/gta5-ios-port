@@ -208,3 +208,4 @@ uint64_t PGMemoryBudgetEvictions(void);
 void PGAssetHealth(uint64_t out[6]);
 void PGStreamingHealth(uint64_t out[6]);		// NativeStreamingHealth.c (GTA-116)
 double PGGPUFrameMilliseconds(void);		// MRRenderer.mm
+size_t PGThreadCPU(char *out, size_t size);	// NativeThreadCPU.c: cores per thread group since the last call (GTA-162)

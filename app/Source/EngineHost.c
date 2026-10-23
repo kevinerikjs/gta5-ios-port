@@ -2906,6 +2906,22 @@ void PGFillAudio(float *left, float *right, uint32_t count) {
 static char *configuredQuality[32];static unsigned configuredQualityCount;
 // The frame limiter reads the frame interval (in 60 Hz refreshes: 0 none, 1 = 60 FPS, 2 = 30 FPS)
 // from 19447080 every frame (CSystem frame limit, set from -frameLimit), so it can change in play.
+// A script fault ends that script instead of the game (Scripts/prepare_script_fault_abort.py, GTA-158). The
+// interpreter has already logged "FAULT: ..." with the script's name and call stack.
+static _Atomic int scriptFaults;
+void pg_script_fault(w2c_game *instance) {
+  (void)instance;
+  int n = atomic_fetch_add(&scriptFaults, 1) + 1;
+  char line[160]; snprintf(line, sizeof line, "Script fault %d: that script was stopped and the game goes on (a BankRelease build would stop the game here).", n);
+  pg_log(line);
+}
+// The frame limiter's last stretch (Scripts/prepare_frame_limit_sleep.py, GTA-169): it used to spin reading the
+// clock for the 1-2 ms its whole-millisecond sleeps couldn't cover; a precise sleep takes that time instead.
+void pg_frame_limit_sleep(float seconds) {
+  if (!(seconds > 0.00005f) || seconds > 0.05f) return;
+  struct timespec wait = {0, (long)(seconds * 1e9f)};
+  nanosleep(&wait, NULL);
+}
 void PGSetFrameLimit(int frameLimit){
   if(!atomic_load(&inputBlock)||frameLimit<0||frameLimit>4||env.memory.size<19447084)return;
   atomic_store_explicit((_Atomic int32_t *)(void *)((uint8_t *)(void *)env.memory.data+19447080),frameLimit,memory_order_relaxed);
@@ -2932,6 +2948,7 @@ void PGSetBackBufferSize(int width,int height){
   atomic_store((_Atomic int32_t *)(base+436),height&~1);
 }
 static void *boot(void *ignored) {
+  pthread_setname_np("gta.engine.main");	// for the Threads line (NativeThreadCPU.c)
   // Real iOS must budget against its Jetsam allowance. Simulator runs opt in
   // with an explicit modeled ceiling so ordinary performance baselines match.
   const char *guard=getenv("PG_MEMORY_GUARD");nativeMemoryGuard=guard?atoi(guard)==1:!TARGET_OS_SIMULATOR;

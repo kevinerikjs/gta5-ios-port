@@ -525,7 +525,7 @@ final class TouchControlsView: UIView {
     private var rightStickWasAsked = false
     /// Called every frame with the engine's poll check (PGInputPolledWithin).
     func updateMissionInputs(_ polled: (Int32) -> Bool) {
-        let next = Set((missionButtons.map(\.input) + missionButtons.compactMap(\.menuInput) + [218, 219, 220, 221, 187, 188, 189, 190, 19]).filter(polled)).union(helpAsked)
+        let next = Set((missionButtons.map(\.input) + missionButtons.compactMap(\.menuInput) + [218, 219, 220, 221, 187, 188, 189, 190, 19, 39]).filter(polled)).union(helpAsked)
         if helpAsksRightStick != rightStickWasAsked {
             rightStickWasAsked = helpAsksRightStick
             GameFolder.log("Touch layout: the right side is \(rightStickWasAsked ? "the right stick (the help asks for it)" : "the camera again")")
@@ -732,7 +732,10 @@ final class TouchControlsView: UIView {
             // A help that names the script D-pad keeps the arrows though the script reads a stick as well (By the
             // Book's tool cart: "Use the left stick/D-pad and A to pick a torture weapon"); the stick still works on the
             // empty part of the left side.
-            let stick = !polledMission.isDisjoint(with: [218, 219, 220, 221]) && !scriptMenu && helpAsked.isDisjoint(with: [232, 233, 234, 235])
+            // A camera that zooms with INPUT_SNIPER_ZOOM (39) reads the left stick up/down on a controller (standard.meta): the
+            // helicopter camera in Eye in the Sky ("Zoom in and out with …", GTA-163) gets the stick, not the D-pad, whose
+            // secondary zoom it doesn't read.
+            let stick = !polledMission.isDisjoint(with: [218, 219, 220, 221, 39]) && !scriptMenu && helpAsked.isDisjoint(with: [232, 233, 234, 235])
             // A prompt that asks for INPUT_CONTEXT gets the interact button: D-pad right sends it too, but nothing
             // says so, and without the D-pad there was no way at all, e.g. standing up from a safehouse couch where the
             // stick changes the TV channel (GTA-82), or drinking more whiskey at Trevor's (log 602).

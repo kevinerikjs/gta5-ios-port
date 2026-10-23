@@ -99,6 +99,12 @@
             "state": "translated",
             "value": "\n\nOʻyin endi odatiy oʻlchamda boshlanadi"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\n\nГра запуститься зі звичайною роздільною здатністю"
+          }
         }
       }
     },
@@ -199,6 +205,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "\n\nOʻyin endi {arg0}da boshlanadi"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\n\n{arg0} MAGLARO"
           }
         }
       }
@@ -900,6 +912,18 @@
             "state": "translated",
             "value": " Buni hohlagan payt Sozlamalardan oʻzgartirsa boʻladi."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " За потреби, Ви можете змінити це в Параметрах"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " SETTINGS TOL"
+          }
         }
       }
     },
@@ -1101,6 +1125,12 @@
           "stringUnit": {
             "state": "translated",
             "value": " Avtomatik oʻlchamda."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " з Автоматичною роздільною здатністю."
           }
         }
       }
@@ -3368,6 +3398,12 @@
             "state": "translated",
             "value": "Bekor qlish"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الغاء"
+          }
         }
       }
     },
@@ -3807,6 +3843,18 @@
             "state": "translated",
             "value": "Hikoya rejimi yoki Sandbox'ni tanlang."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Оберіть Режим Історії, або Пісочницю для запуска гри."
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "STORYA O MAGLAKADLAKAD"
+          }
         }
       }
     },
@@ -3908,6 +3956,18 @@
             "state": "translated",
             "value": "Kontroller: ulanmagan"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Контролер: не підʼєднано"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "walang kontrol ang naka konekta"
+          }
         }
       }
     },
@@ -4008,6 +4068,18 @@
           "stringUnit": {
             "state": "translated",
             "value": "Kontroller: {arg0}"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Контролер: {arg0}"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} kontroller"
           }
         }
       }
@@ -4625,6 +4697,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Past"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вниз"
           }
         }
       }
@@ -5836,6 +5914,18 @@
             "state": "translated",
             "value": "Fan loyihasi · shaxsiy oʻyin fayllaringizni ishga tushiradi"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Проєкт створений фанатами · запускає Ваші особисті файли гри"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FILIPINO GTA V MADE BY RJ"
+          }
         }
       }
     },
@@ -6957,6 +7047,18 @@
             "state": "translated",
             "value": "GTA V Port"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Порт GTA V"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GTA V LEGACY PORT"
+          }
         }
       }
     },
@@ -7224,6 +7326,12 @@
             "state": "translated",
             "value": "→ Oʻyin fayllari"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ملفات اللعبة"
+          }
         }
       }
     },
@@ -7325,6 +7433,12 @@
             "state": "translated",
             "value": "O'yin fayllari topilmadi"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Файли гри не знайдені"
+          }
         }
       }
     },
@@ -7425,6 +7539,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "O'yinda kadr soni"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Частота кадрів гри"
           }
         }
       }
@@ -7787,6 +7907,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Grafika {arg0} ga tushirildi"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Налаштування графіки понижені до {arg0}"
           }
         }
       }
@@ -9615,6 +9741,12 @@
             "state": "translated",
             "value": "Chap"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Наліво"
+          }
         }
       }
     },
@@ -9715,6 +9847,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Yuklanmoqda..."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завантаження..."
           }
         }
       }
@@ -10985,6 +11123,12 @@
             "state": "translated",
             "value": "Ok"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "حسنا"
+          }
         }
       }
     },
@@ -11845,6 +11989,18 @@
             "state": "translated",
             "value": "Olg'a !"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Грати"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MAGLARO"
+          }
         }
       }
     },
@@ -11939,6 +12095,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Resurslar tayyorlanmoqda… {arg0}% · {arg1}"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Підготовка ресурсів... {arg0}% · {arg1}"
           }
         }
       }
@@ -13369,6 +13531,12 @@
             "state": "translated",
             "value": "Oʻlcham avto-ga qaytarildi"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Роздільна здатність змінена на \"Авто\""
+          }
         }
       }
     },
@@ -13641,6 +13809,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "O'ng"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Направо"
           }
         }
       }
@@ -14603,6 +14777,12 @@
             "state": "translated",
             "value": "Logni ulashish"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Поширити логи"
+          }
         }
       }
     },
@@ -15196,6 +15376,12 @@
             "state": "translated",
             "value": "Avval yuklab olishni toʻxtating."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أقف التنزيل مؤقتا"
+          }
         }
       }
     },
@@ -15284,6 +15470,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fayllarni saqlab boʻlmagani uchun toʻxtatildi. Xotirani boʻshating va keyin davom ettiring."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توقفت العملية لتعذّر حفظ الملفات وفّر مساحة تخزين، ثم استأنف"
           }
         }
       }
@@ -15872,6 +16064,12 @@
             "state": "translated",
             "value": "Ilova ushbu papkani :{arg0} -eslab qola olmadi"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "هذا التطبيق لا يتعرف على هذا الملف: {arg0}"
+          }
         }
       }
     },
@@ -15960,6 +16158,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ilovaga ushbu papkani ochishga ruxsat berilmadi. Oʻyin papkasini Fayllar › iPhone’da › GTA V Port joyiga oʻtkazing; ilova uni oʻzi topib oladi."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُسمح للتطبيق بفتح ذلك المجلد. انقل مجلد اللعبة إلى «الملفات › على الـ iPhone › GTA V Port» بدلًا من ذلك؛ وسيعثر التطبيق عليه تلقائيًا هناك"
           }
         }
       }
@@ -16216,6 +16420,12 @@
             "state": "translated",
             "value": "Yuklab olishni boshlab boʻlmadi."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذر بدأ التنزيل"
+          }
         }
       }
     },
@@ -16304,6 +16514,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fayllarni oʻchrib boʻlmadi."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذر حذف الملفات"
           }
         }
       }
@@ -16755,6 +16971,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Simulyator Mac'dagi oʻyin fayllarini toʻgʻridan-toʻgʻri oʻqiydi. Yuklamalarni test qilish uchun --stream-assets bilan ishga tushiring."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يقرأ المحاكي ملفات اللعبة الخاصة بجهاز Mac مباشرةً. شغّله باستخدام ‎stream-assets‎ لاختبار التنزيلات"
           }
         }
       }
@@ -17521,6 +17743,18 @@
             "state": "translated",
             "value": "Sensorli boshqaruv tayyor"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Елементи керування дотиком готові"
+          }
+        },
+        "fil": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KAMAY KAMAY LANG"
+          }
         }
       }
     },
@@ -17788,6 +18022,12 @@
             "state": "translated",
             "value": "{arg0} ni qayta urining"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Спробуйте {arg0} ще раз"
+          }
         }
       }
     },
@@ -18054,6 +18294,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Yuqori"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нагору"
           }
         }
       }
@@ -18482,6 +18728,12 @@
             "state": "translated",
             "value": "taxminan {arg0} qoldi"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "متبقي {arg0} تقريبا"
+          }
         }
       }
     },
@@ -18666,6 +18918,12 @@
             "state": "translated",
             "value": "Ulanib bo‘lmadi ({arg0})"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "неможливо підʼєднатись ({arg0})"
+          }
         }
       }
     },
@@ -18766,6 +19024,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "tekshirilmoqda..."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "перевірка..."
           }
         }
       }
@@ -18868,6 +19132,12 @@
             "state": "translated",
             "value": "ulandi ✓"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "підключено ✓"
+          }
         }
       }
     },
@@ -18969,6 +19239,12 @@
             "state": "translated",
             "value": "yaroqli manzil emas"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "невірна адреса"
+          }
         }
       }
     },
@@ -19057,6 +19333,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "bir daqiqadan kam vaqt qoldi"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أقل من دقيقة متبقية"
           }
         }
       }
@@ -19574,6 +19856,12 @@
             "state": "translated",
             "value": "Xarita"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Мапа"
+          }
         }
       }
     },
@@ -19668,6 +19956,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sandbox xarita: "
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Мапа пісочниці: "
           }
         }
       }
@@ -19770,6 +20064,12 @@
             "state": "translated",
             "value": "Boshqaruv elementlari joylashuvi"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Розташування елементів керування"
+          }
         }
       }
     },
@@ -19864,6 +20164,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Boshlanmoqda…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ البدء…"
           }
         }
       }
@@ -19960,6 +20266,12 @@
             "state": "translated",
             "value": "Bajarildi: barcha oʻyin fayllari arxivdan chiqarildi va tekshirildi"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "اكتمل: تم فك ضغط جميع ملفات اللعبة والتحقق منها"
+          }
         }
       }
     },
@@ -20055,6 +20367,12 @@
             "state": "translated",
             "value": "Yakunlab boʻlmadi"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذر الإكمال"
+          }
         }
       }
     },
@@ -20144,6 +20462,12 @@
             "state": "translated",
             "value": "Oʻyin fayllariga oʻtish"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ربط ملفات لعبتك"
+          }
         }
       }
     },
@@ -20232,6 +20556,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Barcha muammolarni koʻrsatish"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عرض جميع المشاكل"
           }
         }
       }
@@ -20423,6 +20753,12 @@
             "state": "translated",
             "value": "Davom etish"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "متابعة"
+          }
         }
       }
     },
@@ -20518,6 +20854,12 @@
             "state": "translated",
             "value": "Barcha fayllarni qayta tekshirish"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "فحص جميع الملفات مجددا"
+          }
         }
       }
     },
@@ -20606,6 +20948,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Qayta koʻrib chiqish"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إعادة البحث"
           }
         }
       }
@@ -20702,6 +21050,12 @@
             "state": "translated",
             "value": "Papkani tanlang…"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "اختيار ملف..."
+          }
         }
       }
     },
@@ -20797,6 +21151,12 @@
             "state": "translated",
             "value": "Arxivni tanlang…"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "اختر ملفًا مضغوطًا…"
+          }
         }
       }
     },
@@ -20891,6 +21251,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Arxivdan chiqarish"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "فك الضغط"
           }
         }
       }
@@ -21223,6 +21589,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Teclado y mouse"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Клавіатура та миша"
           }
         }
       }
@@ -21574,6 +21946,12 @@
             "state": "translated",
             "value": "O‘yin fayllaringiz qidirilmoqda…"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Шукаємо Ваші файли гри..."
+          }
         }
       }
     },
@@ -21775,6 +22153,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "GTA V Port papkasida"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "В папці порту GTA V"
           }
         }
       }
@@ -22067,6 +22451,12 @@
             "state": "translated",
             "value": "Server manzili web-manzil emas."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Адреса серверу не є веб-адресою"
+          }
         }
       }
     },
@@ -22268,6 +22658,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "O‘yin fayllarini qo‘shing"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Додати файли гри"
           }
         }
       }
@@ -22547,6 +22943,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Serveringizdan translatsiya qilinmoqda"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "البث من خادمك"
           }
         }
       }
@@ -24135,6 +24537,12 @@
             "state": "translated",
             "value": "Geympad"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Контролер"
+          }
         }
       }
     },
@@ -24559,6 +24967,12 @@
             "state": "translated",
             "value": "Oʻyin fayllari joyida"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ملفات اللعبة سليمة"
+          }
         }
       }
     },
@@ -24647,6 +25061,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Barcha {arg0} ta oʻyin fayllari mavjud va toʻliq."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جميع ملفات اللعبة {arg0} موجودة ومكتملة"
           }
         }
       }
@@ -24737,6 +25157,12 @@
             "state": "translated",
             "value": "1 ta fayl ushbu iPhone’da emas, faqat iCloud’da (masalan, {arg0}). Oʻyin uni u yerdan oʻqiy olmaydi: oʻyin papkasini Fayllar › iPhone’imda › GTA V Port joyiga oʻtkazing."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يوجد ملف واحد في iCloud فقط وليس على هذا الـ iPhone (مثل {arg0} ). لا تستطيع اللعبة قراءة الملفات من هناك: انقل مجلد اللعبة إلى الملفات › على الـ iPhone › GTA V Port."
+          }
         }
       }
     },
@@ -24825,6 +25251,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "{arg0} ta fayl iPhone’da yoʻq, faqat iCloud’da turibdi (masalan, {arg1}). Oʻyin ularni u yerdan oʻqiy olmaydi. Oʻyin papkasini Fayllar › iPhone’imda › GTA V Port joyiga koʻchiring."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} الملفات موجودة في iCloud فقط وليست على هذا الـ iPhone (مثل {arg1} ). لا تستطيع اللعبة قراءتها من هناك: انقل مجلد اللعبة إلى الملفات › على الـ iPhone › GTA V Port."
           }
         }
       }
@@ -25093,6 +25525,12 @@
             "state": "translated",
             "value": "Ushbu papkada o'yin fayllari mavjud emas."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي هذا المجلد على أي من ملفات اللعبة"
+          }
         }
       }
     },
@@ -25181,6 +25619,12 @@
           "stringUnit": {
             "state": "translated",
             "value": " Arxivdan chiqarish yoki nusxalash oxirigacha yetmay toʻxtagan koʻrinadi, koʻpincha bunga iPhone xotirasi toʻlib qolgani sabab boʻladi. Joy boʻshating, bu papkani oʻchirib yuboring va oʻyinni qaytadan arxivdan chiqaring"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " غالبًا ما توقفت عملية فك الضغط أو النسخ قبل اكتمالها، ويحدث ذلك عادةً بسبب نفاد مساحة التخزين في الـ iPhone. وفّر مساحة، واحذف هذا المجلد، ثم أعد فك ضغط اللعبة"
           }
         }
       }
@@ -25449,6 +25893,12 @@
             "state": "translated",
             "value": "Oʻyin fayllari iCloud’da"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ملفات اللعبة في الـ iCloud"
+          }
         }
       }
     },
@@ -25543,6 +25993,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ayrim oʻyin fayllari shikastlangan"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "بعض ملفات اللعبة تالفة"
           }
         }
       }
@@ -25639,6 +26095,12 @@
             "state": "translated",
             "value": "Ayrim oʻyin fayllari yetishmayabdi"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "بعض ملفات اللعبة مفقودة"
+          }
         }
       }
     },
@@ -25733,6 +26195,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "{arg0} va {arg1}"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} و {arg1}"
           }
         }
       }
@@ -25829,6 +26297,12 @@
             "state": "translated",
             "value": "Qurilmada allaqachon mavjud"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "موجود بالفعل على هذا الـ iPhone"
+          }
         }
       }
     },
@@ -25917,6 +26391,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Oson yoʻli: Fayllar ilovasida oʻyin papkangizni iPhone’imda › GTA V Port ichiga tashlang. Ilova uni o'sha yerdan o'zi topadi."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الطريقة الأسهل: انقل مجلد اللعبة بعد فك ضغطه في تطبيق «الملفات» إلى «على الـ iPhone › GTA V Port». سيعثر التطبيق عليه تلقائيًا هناك، مهما كان عمق موقعه داخل المجلدات"
           }
         }
       }
@@ -26007,6 +26487,12 @@
             "state": "translated",
             "value": "Boshqa joydami? Undan yuqoridagi istalgan papkani (hatto iPhone’imdaligicha ham) tanlang, ilova ichidagi hamma narsani qidirib topadi."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "في مكان آخر؟ اختر أي مجلد أعلى منه، حتى «على الـ iPhone» نفسه، وسيبحث التطبيق في كل ما بداخله"
+          }
         }
       }
     },
@@ -26095,6 +26581,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Linkdan"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "من رابط"
           }
         }
       }
@@ -26185,6 +26677,12 @@
             "state": "translated",
             "value": "Oʻyin arxiviga (zip yoki rar) toʻgʻridan-toʻgʻri havola tashlang: ilova uni yuklab oladi, jarayonda arxivdan chiqaradi, har bir faylni tekshiradi va arxivni oʻchirib yuboradi. Ikki marta emas, taxminan {arg0} boʻsh joy kerak boʻladi. Ish jarayonida ilovani ochiq saqlang."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الصق رابطًا مباشرًا لأرشيف لعبتك (zip أو rar): سيُنزّله التطبيق ويفك ضغطه أثناء التنزيل، ويتحقق من كل ملف، ثم يحذف الأرشيف. يحتاج إلى مساحة فارغة تبلغ حوالي {arg0} ، وليس ضعف ذلك. أبقِ التطبيق مفتوحًا أثناء العملية"
+          }
         }
       }
     },
@@ -26273,6 +26771,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Avval \"Yuklab olish\" tugmasi bosiladigan sahifalar ham tushadi: u shu yerning oʻzida brauzerda ochiladi va ilova yuklashni oʻz zimmasiga oladi."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعمل أيضًا صفحة تنزيل تضغط فيها على «تنزيل» أولًا: ستُفتح هنا في المتصفح، وسيتولى التطبيق متابعة التنزيل"
           }
         }
       }
@@ -26363,6 +26867,12 @@
             "state": "translated",
             "value": "Yoki oʻz oʻyin serveringiz manzili (masalan, Tailscale orqali kompyuteringiz): oʻyin shundan keyin fayllarni oʻsha yerdan oqim (striming) orqali tortib ishlaydi"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أو عنوان خادم لعبتك الخاص (مثل جهاز الكمبيوتر الخاص بك عبر Tailscale): ستبث اللعبة ملفاتها منه مباشرةً"
+          }
         }
       }
     },
@@ -26451,6 +26961,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fayllar\"dagi arxivdan"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "من أرشيف في تطبيق «الملفات»"
           }
         }
       }
@@ -26541,6 +27057,12 @@
             "state": "translated",
             "value": "\"Fayllar\"da oʻyinning .zip yoki .rar arxivi (yoki koʻp qismli arxivning barcha qismlari) bormi? Ilova uni toʻgʻridan-toʻgʻri oʻz papkasiga chiqaradi va har bir faylni tekshiradi. Alohida arxivchi dastur shart emas."
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "هل لديك ملف .zip أو .rar للعبة (أو جميع أجزاء الأرشيف متعدد الأجزاء) في تطبيق «الملفات»؟ سيفك التطبيق ضغطه مباشرةً داخل مجلده الخاص ويتحقق من كل ملف. لا حاجة إلى تطبيق منفصل لفك الضغط"
+          }
         }
       }
     },
@@ -26630,6 +27152,12 @@
             "state": "translated",
             "value": "Oʻyin fayllari tekshirilmoqda…"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "فحص ملفات اللعبة..."
+          }
         }
       }
     },
@@ -26718,6 +27246,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "GTA V Port papkasidagi \"{arg0}\": barcha {arg1} ta oʻyin fayli tekshirildi ({arg2})."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"{arg0}\" في مجلد GTA V Port: تم التحقق {arg1} من جميع ملفات اللعبة وعددها  ({arg2})."
           }
         }
       }
@@ -26897,6 +27431,12 @@
             "state": "translated",
             "value": "O'yinashga tayyor"
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جاهز للعب"
+          }
         }
       }
     },
@@ -26986,6 +27526,12 @@
             "state": "translated",
             "value": "Shunga qaramay oʻynashni tanladingiz. "
           }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لقد اخترت اللعب على أي حال "
+          }
         }
       }
     },
@@ -27074,6 +27620,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ushbu iPhone’dagi \"{arg0}\"."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"{arg0}\" على هذا الـ iPhone."
           }
         }
       }
@@ -31275,6 +31827,12 @@
             "state": "translated",
             "value": "O'yin fayllari: {arg0}. {arg1}"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Файли гри: {arg0}. {arg1}"
+          }
         }
       }
     },
@@ -31369,6 +31927,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "{arg0} · 1 ta muammoli fayl bor, baribir ishga tushirilmoqda"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} · 1 файл із помилкою, продовжуємо запуск"
           }
         }
       }
@@ -31465,6 +32029,12 @@
             "state": "translated",
             "value": "{arg0} · {arg1} ta muammoli fayl bor, baribir ishga tushirilmoqda"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} · {arg1} файли/ів із помилкою, продовжуємо запуск"
+          }
         }
       }
     },
@@ -31559,6 +32129,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "{arg0} · barcha fayllar teksirildi"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} · всі файли перевірені"
           }
         }
       }
@@ -33116,6 +33692,12 @@
             "state": "translated",
             "value": "Telegram"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Telegram"
+          }
         }
       }
     },
@@ -33210,6 +33792,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Five Star Port Telegram’da"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Five Star Port в Telegram"
           }
         }
       }
@@ -37888,6 +38476,12 @@
             "state": "translated",
             "value": "Modlar faol"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Моди доступні на"
+          }
         }
       }
     },
@@ -37982,6 +38576,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "{arg0} ta mod fayli faol. Modlar biz tuzata olmaydigan qotish va nosozliklarni keltirib chiqarishi mumkin: ular haqida Telegram’dagi \"Mods\" mavzusida soʻrang. Loglarni faqat modlarsiz ham yuz beradigan muammolar uchun yuboring."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0} файлів модів активні. Моди можуть викликати непередбачені збої або виліти гри котрі ми не можемо виправити: запитайте про них в розділі Mods в Telegram. Поширюйте логи тільки для проблем котрі трапляються і без модів."
           }
         }
       }
@@ -43752,6 +44352,12 @@
             "state": "translated",
             "value": "Chitlar"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Чіти"
+          }
         }
       }
     },
@@ -44018,6 +44624,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Didit yaratish"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заспавнити транспорт"
           }
         }
       }
@@ -49011,6 +49623,12 @@
             "state": "translated",
             "value": "Transport yuklanmoqda. Yakunlanishini kuting."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Транспортний засіб вже завантажується. Дочекайтесь кінця завантаження."
+          }
         }
       }
     },
@@ -49111,6 +49729,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "{arg0} yaratildi"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заспавнено транспорт: {arg0}"
           }
         }
       }
@@ -49213,6 +49837,12 @@
             "state": "translated",
             "value": "Ushbu transport sizning oʻyiningizda mavjud emas"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Цей транспортний засіб недоступний у Вашій грі."
+          }
         }
       }
     },
@@ -49314,6 +49944,12 @@
             "state": "translated",
             "value": "Transportni yuklash uzoq vaqt oldi. Ochiq joyda qayta urinib koʻring."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завантаження транспорту зайняло забагато часу. Спробуйте ще раз в більш вільному середовищі."
+          }
         }
       }
     },
@@ -49409,6 +50045,12 @@
             "state": "translated",
             "value": "Obektni xavfsiz paydo qilish uchun xotira yetmayapti. Tinchroq joyga oʻting yoki grafikani pasaytirib, qayta kiring."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Недостатньо памʼяті для безпечного спавну. Переміститься в менш завантажене місце, або перезапустить гру з нижчими налаштуваннями графіки."
+          }
         }
       }
     },
@@ -49503,6 +50145,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Har ikkala menyu transporti band. Birtasini boʻsh qoldirib, qaytadan urinib koʻring."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Використовуються оби два меню транспорту. Залишіть одне пустим, і спробуйте ще раз."
           }
         }
       }
@@ -49694,6 +50342,12 @@
             "state": "translated",
             "value": "Oʻyin ushbu transportni bu yerda yarata olmadi."
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Гра не змогла створити цей транспортний засіб в цьому місці."
+          }
         }
       }
     },
@@ -49884,6 +50538,12 @@
             "state": "translated",
             "value": "Bajarildi: {arg0}"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Готово: {arg0}"
+          }
         }
       }
     },
@@ -49984,6 +50644,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Avval transportga oʻtiring."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Спочатку зайдіть у транспортний засіб."
           }
         }
       }
@@ -50181,6 +50847,12 @@
             "state": "translated",
             "value": "{arg0}: oʻyin javobi kutilmoqda…"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{arg0}: очікування гри..."
+          }
         }
       }
     },
@@ -50281,6 +50953,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Oʻyin javob bermadi. Oddiy oʻyin rejimiga qayting va qaytadan urinib koʻring."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Гра не надала відповіді. Поверніться до звичайної гри, і спробуйте ще раз."
           }
         }
       }
@@ -50632,6 +51310,12 @@
             "state": "translated",
             "value": "O'yin to'xtadi"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Гра була зупинена"
+          }
         }
       }
     },
@@ -50732,6 +51416,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Muammoni hal qilishimiz uchun log-faylni yuboring, soʻngra oʻyinni davom ettirish uchun ilovani yopib, qayta oching."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Будь ласка, поширте логи, для того що би це могло бути виправлено, потім закрийте гру, і відкрийте її ще раз для того щоб продовжити грати."
           }
         }
       }
@@ -53887,6 +54577,12 @@
             "state": "translated",
             "value": "找到 Weazel News：用箭頭切換電視頻道（或把左搖桿往左右推）。"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Знайдіть Weazel News: змінюйте канали ТВ за допомогою стрілочок (або направте лівий стік вбік)."
+          }
         }
       }
     },
@@ -53969,6 +54665,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lifeinvader 發表會 {arg0} / {arg1}。電視一直是黑的（遊戲檔案裡沒有電視影片）。{arg2} 時 Jay Norris 會舉起手機：那時打電話給他。"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Презентація Lifeinvader {arg0} з {arg1}. ТВ залишається чорним (в файлах гри відсутні ТВ-відео). О {arg2} Джей Норріс підійме телефон: подзвоніть йому тоді."
           }
         }
       }
@@ -54053,6 +54755,12 @@
             "state": "translated",
             "value": "現在打：Jay Norris 正舉著手機。手機 › 聯絡人 › Jay Norris，在 {arg0} 之前（現在 {arg1}）。"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Дзвоніть зараз: Джей Норріс підняв телефон. Телефон › Контакти › Джей Норріс, перед {arg0} ({arg1} зараз)."
+          }
         }
       }
     },
@@ -54135,6 +54843,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "來不及打了：任務會失敗。重試，並在 1:17 到 2:50 之間打給 Jay Norris。"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Занадто пізно для дзвінку: місія провалиться. Спробуйте ще раз, і подзвоніть Джею Норрісу між 13:17 та 14:50."
           }
         }
       }
@@ -59703,6 +60417,12 @@
             "state": "translated",
             "value": "\n\n最有效的是增加記憶體：用 AltStore 2.3 或更新版本安裝本 App，免費 Apple ID 也能取得額外記憶體。"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\n\nБільша кількість памʼяті допомагає більше всього: встановіть додаток за допомогою AltStore 2.3, або новіше. Ця версія дозволяє використовувати більше кількість памʼяті з безкоштовним Apple ID."
+          }
         }
       }
     },
@@ -59786,6 +60506,12 @@
             "state": "translated",
             "value": "此裝置記憶體較少"
           }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Недостатня кількість памʼяті на цьому пристрої"
+          }
         }
       }
     },
@@ -59868,6 +60594,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "在此裝置上，iOS 只給遊戲約 {arg0} MB 記憶體，少於城市所需。城市細節會降低，材質可能載入較慢或缺失。這在此裝置上屬於正常情況，無需回報。"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS виділяє всього лише приблизно {arg0} МБ під гру на цьому пристрої, менше, ніж потрібно місту. Очікуйте менш детальне місто та текстури котрі завантажуються з затримкою або залишаються зниклими. Це нормально, тому необхідність повідомляти про це відсутня."
           }
         }
       }
@@ -64178,6 +64910,291 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 LiveContainer 中,要先開啟它的兩項修正,選擇器才能開啟你的遊戲資料夾:在 LiveContainer 中開啟 GTA V Port 的設定,在 Fixes 下開啟「Fix File Picker」和「Use LiveContainer's Bundle ID」。然後選擇你的遊戲資料夾,之前版本留下的也可以。"
+          }
+        }
+      }
+    },
+    "Still packed in the Mods folder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Still packed in the Mods folder"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا تزال مضغوطة في مجلد التعديلات"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch gepackt im Mods-Ordner"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún comprimidos en la carpeta Mods"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún comprimidos en la carpeta Mods"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encore compressés dans le dossier Mods"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ancora compresse nella cartella Mods"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mods フォルダー内でまだ圧縮されたまま"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mods 폴더에 아직 압축된 채로 있음"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nadal spakowane w folderze Mods"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ainda compactados na pasta Mods"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ещё не распакованы в папке Mods"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vẫn còn nén trong thư mục Mods"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mods 文件夹中仍为压缩包"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mods 資料夾中仍為壓縮檔"
+          }
+        }
+      }
+    },
+    "The game can't use a mod that is still packed. Tap one to install it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The game can't use a mod that is still packed. Tap one to install it."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يمكن للعبة استخدام تعديل لا يزال مضغوطًا. اضغط على أحدها لتثبيته."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Spiel kann einen noch gepackten Mod nicht nutzen. Tippe auf einen, um ihn zu installieren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El juego no puede usar un mod que sigue comprimido. Toca uno para instalarlo."
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El juego no puede usar un mod que sigue comprimido. Toca uno para instalarlo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le jeu ne peut pas utiliser un mod encore compressé. Touchez-en un pour l’installer."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il gioco non può usare una mod ancora compressa. Toccane una per installarla."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "圧縮されたままの MOD はゲームで使えません。タップしてインストールしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "압축된 채로 있는 모드는 게임에서 쓸 수 없습니다. 탭해서 설치하세요."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gra nie może użyć moda, który jest nadal spakowany. Stuknij, aby go zainstalować."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O jogo não consegue usar um mod que ainda está compactado. Toque em um para instalá-lo."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Игра не может использовать мод, который ещё не распакован. Нажмите на него, чтобы установить."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trò chơi không dùng được mod vẫn còn nén. Chạm vào một mod để cài đặt."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏无法使用仍是压缩包的模组。轻点一个即可安装。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "遊戲無法使用仍是壓縮檔的模組。點一下即可安裝。"
+          }
+        }
+      }
+    },
+    "Tap to install": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to install"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "اضغط للتثبيت"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zum Installieren tippen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toca para instalar"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toca para instalar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touchez pour installer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tocca per installare"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タップしてインストール"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "탭해서 설치"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stuknij, aby zainstalować"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toque para instalar"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Нажмите, чтобы установить"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chạm để cài đặt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "轻点以安装"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "點一下以安裝"
           }
         }
       }

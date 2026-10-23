@@ -40,6 +40,7 @@ static struct TextureStats {
 	std::atomic<uint64_t> createFailures{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0};
 	std::atomic<int64_t> halfSize{0};		// Lite: textures on the GPU without their largest level
 	std::atomic<uint64_t> missingLevel{0};	// Lite: copies or readbacks that needed a dropped level
+	std::atomic<uint64_t> convertMicros{0}, converts{0};	// BC to ASTC or pixels on the CPU (GTA-162: what converting ahead would save)
 } gTextureStats;
 // What the textures hold on the GPU (an estimate in the simulator). On an iPhone that memory counts
 // against the app's limit; the simulator's GPU is the Mac's, so the simulated limit adds it (EngineHost.c).
@@ -758,14 +759,18 @@ static void uploadTextureInner(const uint32_t *p) {
 		size_t outSize = 0;
 		if (t->astc) {		// rewritten block by block, then uploaded as blocks (rows count block rows)
 			uint32_t astcBpr = 0, astcRpi = 0;
+			double c0 = nowMs();
 			void *blocks = PGTranscodeBCToASTC(t->bcKind, w, h, d, bpr, rpi, data, size, &outSize, &astcBpr, &astcRpi);
+			gTextureStats.convertMicros += (uint64_t)((nowMs() - c0) * 1000); gTextureStats.converts++;
 			if (!blocks) { gTextureStats.decodeFailures++; logOnce("astcfail", "Metal renderer: BC%u upload smaller than its region", t->bcKind); return; }
 			uploadBlocks(t, level, slice, x, y, z, w, h, d, astcBpr, astcBpr * astcRpi, (const uint8_t *)blocks);
 			free(blocks);
 			t->proxyDirty = true;
 			return;
 		}
+		double c0 = nowMs();
 		decoded = PGDecodeBC(t->bcKind, w, h, d, bpr, rpi, data, size, &outSize);
+		gTextureStats.convertMicros += (uint64_t)((nowMs() - c0) * 1000); gTextureStats.converts++;
 		if (!decoded) { gTextureStats.decodeFailures++; logOnce("bcfail", "Metal renderer: BC decode failed"); return; }
 		if (t->format == MTLPixelFormatA1BGR5Unorm) {		// RGBA8 to A1BGR5 in place: Metal names components from the lowest bit (A bit 0, B 1-5, G 6-10, R 11-15)
 			const uint8_t *in = (const uint8_t *)decoded; uint16_t *out = (uint16_t *)decoded;
@@ -2496,6 +2501,12 @@ static void report() {
 		char b[48]; snprintf(b, sizeof b, "%sBC%d%s %.0f MB", kinds.empty() ? "" : ", ", k, srgb ? " sRGB" : "", v / MB); kinds += b;
 	}
 	if (!kinds.empty()) logf("[metal] BC textures on the GPU by kind: %s", kinds.c_str());
+	static double lastConvertReport;
+	double convertNow = nowMs(), convertSpan = lastConvertReport ? convertNow - lastConvertReport : 0;
+	lastConvertReport = convertNow;
+	uint64_t convertMicros = gTextureStats.convertMicros.exchange(0), converts = gTextureStats.converts.exchange(0);
+	if (converts && convertSpan > 0) logf("[metal] texture conversion on the CPU: %.0f ms for %llu uploads in the last %.0f s (%.3f cores)",
+	                                    convertMicros / 1000.0, (unsigned long long)converts, convertSpan / 1000, convertMicros / 1000.0 / convertSpan);
 	uint64_t ring = 0, ringBig = 0;
 	for (auto &f : R->frames) { ring += f.chunks.size() * FrameRing::CHUNK; for (id<MTLBuffer> b : f.big) ringBig += b.length; }
 	logf("[metal] constant buffers: %lld (%.0f MB on the CPU), %lld ever written", (long long)gBufferStats.cbCount.load(), gBufferStats.cbBytes / MB, (long long)gBufferStats.cbWritten.load());

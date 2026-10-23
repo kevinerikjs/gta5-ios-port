@@ -26,6 +26,21 @@ static void disposeThread(void *pointer) {
   struct EngineThread *thread=pointer;
   wasm2c_game_free(&thread->host.game);wasm_rt_free_thread();free(thread);currentThread=NULL;
 }
+// Native names for the engine's threads, for the Threads line in the log (GTA-162, NativeThreadCPU.c). The game names
+// every thread it starts: rage::sysIpcCreateThread (f128) mallocs a 56-byte block, copies the name into it at offset
+// 24 (31 characters at most) and starts rage::sysIpcThreadWrapper (table index 15) with it. Other threads are
+// "gta.engine.start<N>", after their start function's table index.
+static void nameEngineThread(struct EngineThread *thread) {
+  wasm_rt_shared_memory_t *m=&thread->host.memory;const uint8_t *base=(const uint8_t *)(void *)m->data;
+  char name[64]="";u64 arg=thread->arg;
+  if(thread->start==15&&arg&&arg<m->size&&m->size-arg>=56){
+    size_t n=0;while(n<31&&base[arg+24+n]>=0x20&&base[arg+24+n]<0x7f)n++;
+    if(n>=2&&!base[arg+24+n]){memcpy(name,base+arg+24,n);name[n]=0;}
+  }
+  if(!name[0])snprintf(name,sizeof name,"gta.engine.start%llu",(unsigned long long)thread->start);
+  pthread_setname_np(name);
+  char line[96];snprintf(line,sizeof line,"Engine thread: %s.",name);pg_log(line);
+}
 static void *runThread(void *pointer) {
   struct EngineThread *thread=pointer;currentThread=thread;wasm_rt_init_thread();
   pthread_cleanup_push(disposeThread,thread);
@@ -41,6 +56,7 @@ static void *runThread(void *pointer) {
     w2c_game_0x5Femscripten_thread_init(&thread->host.game,thread->pthread,0,0,1,1048576,0);
     w2c_game_0x5Femscripten_tls_init(&thread->host.game);
     wasm_rt_funcref_table_t *table=w2c_game_0x5F_indirect_function_table(&thread->host.game);
+    nameEngineThread(thread);
     if(thread->start>=table->size)wasm_rt_trap(WASM_RT_TRAP_CALL_INDIRECT);
     wasm_rt_funcref_t entry=table->data[thread->start];
     wasm_rt_func_type_t expected=wasm2c_game_get_func_type(1,1,WASM_RT_I64,WASM_RT_I64);
