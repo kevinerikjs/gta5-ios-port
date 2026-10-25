@@ -2317,8 +2317,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             // scan reads RT with IS_CONTROL_PRESSED, which reads the input itself, so the poll check never saw it and the
             // RT button showed only while the help named it (GTA-163). Other inputs keep the poll check: scripts read
             // the play inputs that way all the time.
-            // A script screen that reads the frontend D-pad every frame (the ATM, GTA-202) gets the menu layout too.
-            touchControls.updateMissionInputs(read: { PGInputReadWithin($0, 250) != 0 }) { previewMission || PGInputPolledWithin($0, 700) != 0 || ((222...235).contains($0) && PGInputReadWithin($0, 700) != 0) }
+            // A script screen that reads the frontend D-pad every frame (the ATM, GTA-202) gets the menu layout too; only
+            // the game's own scripts count, as a script mod may check the D-pad every frame with its menu closed (GTA-213).
+            touchControls.updateMissionInputs(read: { PGInputGameReadWithin($0, 250) != 0 }) { previewMission || PGInputPolledWithin($0, 700) != 0 || ((222...235).contains($0) && PGInputReadWithin($0, 700) != 0) }
             // Deliberately let the native game decide if relative mouse motion
             // disables assisted targeting. Never force the last-device flag.
             var mouseSwipe = touchControls.experimentalMouseLookActive && !hasController && !pcControls

@@ -112,7 +112,7 @@ targets:
       properties:
         CFBundleDisplayName: GTA V Port
         CFBundleDevelopmentRegion: en
-        CFBundleShortVersionString: "1.5"
+        CFBundleShortVersionString: "1.5.1"
         # Your game-file server may be a plain-http address on your tailnet.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
@@ -125,7 +125,7 @@ targets:
         # The app folder (logs) is visible in the Files app.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        CFBundleVersion: "18"
+        CFBundleVersion: "19"
         UILaunchScreen: {}
         # The scene lifecycle (GTA-171): an app built with the iOS 27 SDK stops at launch without it. One window
         # (AppDelegate.swift, SceneDelegate); a TV (AirPlay or HDMI) gets its own scene for the game's picture (TVSceneDelegate).

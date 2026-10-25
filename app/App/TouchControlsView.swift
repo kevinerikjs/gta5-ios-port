@@ -533,6 +533,8 @@ final class TouchControlsView: UIView {
     /// takes input, about 4 s after Interact. The play layout had no Back, so a touch-only player couldn't leave the ATM
     /// (GTA-202). Its frontend Accept and Back (201/202) don't tell: scripts poll those all through normal play. Read
     /// without a break for 0.6 s, so a script that checks the D-pad once can't swap the layout; the phone keeps its dock.
+    /// Only the game's own scripts' reads count: a script mod may check the D-pad every frame with its menu closed, and
+    /// the play controls turned into the menu ones while driving (GTA-213).
     private var frontendScreen = false
     private var frontendSince: CFTimeInterval?
     private var scriptMenu: Bool { (polledMission.isSuperset(of: [187, 188]) || frontendScreen) && context != .menu && !phoneDock }

@@ -2070,6 +2070,9 @@ void PGAsiTextFinish(const char *text) {
   atomic_store(&pg_asi_text_state, text ? 1 : 2);
 }
 static bool pg_asi_native(uint64_t hash, uint64_t arguments, uint32_t count, uint64_t result);
+// Above 0 while a game command called by a script mod (or by the app itself) runs on this thread: the inputs it reads
+// don't count as a game screen's (PGInputGameReadWithin, GTA-213).
+static _Thread_local int pg_asi_calls;
 static const char *pg_asi_guest_string(uint64_t address) { return address ? pg_string(&env, address) : ""; }
 static bool pg_asi_text_command(uint64_t hash, uint64_t arguments, uint32_t count, uint64_t result) {
   const uint64_t *a = count ? pg_pointer(&env, arguments, 8ull * count) : 0;
@@ -2130,7 +2133,7 @@ static bool pg_asi_native(uint64_t hash, uint64_t arguments, uint32_t count, uin
   if (!context) context = pg_asi_alloc(128);
   uint8_t *info = pg_pointer(&env, context, 128); memset(info, 0, 128);
   memcpy(info, &result, 8); memcpy(info + 8, &count, 4); memcpy(info + 16, &arguments, 8);
-  pg_asi_natives[low].handler(pg_asi_game, context);
+  pg_asi_calls++; pg_asi_natives[low].handler(pg_asi_game, context); pg_asi_calls--;
   uint32_t vectors; memcpy(&vectors, info + 24, 4);
   for (uint32_t i = 0; i < vectors && i < 4; i++) {
     uint64_t to; memcpy(&to, info + 32 + 8 * i, 8); if (!to) continue;
@@ -2358,6 +2361,19 @@ static void pg_test_phone(w2c_game *instance) {
   if (!getenv("PG_TEST_PHONE") || (PGGameStatus() & 16) || frames > 1650 || ++frames < 1200) return;
   if (frames == 1200) { pg_test_call(instance, 0xa4e8e696c532fbc7ull, 1, (uint64_t[]){0}); pg_log("TEST: phone out by the game."); }
   if (frames == 1650) { pg_test_call(instance, 0x3bc861df703e5097ull, 0, NULL); pg_log("TEST: phone put away by the game."); }
+}
+#endif
+#if TARGET_OS_SIMULATOR
+// Test (PG_TEST_MOD_DPAD=1, GTA-213): from about 40 s in, for about 40 s, IS_CONTROL_JUST_PRESSED of the frontend D-pad
+// up and down every frame through the script-mod path, as a mod that checks them with its menu closed does. The touch
+// controls keep the play layout (v1.5 switched to the menu one).
+static void pg_test_mod_dpad(w2c_game *instance) {
+  static int frames;
+  if (!getenv("PG_TEST_MOD_DPAD") || (PGGameStatus() & 16) || frames >= 2400 || ++frames < 1200) return;
+  pg_asi_game = instance;
+  if (frames == 1200) pg_log("TEST: a mod reads the frontend D-pad up and down every frame.");
+  for (uint64_t input = 187; input <= 188; input++) pg_test_call(instance, 0x580417101ddb492full, 2, (uint64_t[]){2, input});
+  if (frames == 2400) pg_log("TEST: the mod stops reading the frontend D-pad.");
 }
 #endif
 #if TARGET_OS_SIMULATOR
@@ -2722,6 +2738,7 @@ void pg_asi_script_tick(w2c_game *instance, u64 thread) {
   if (thread && strcmp(pg_string(&env, thread + 428), "main")) pg_debug_tick(instance, false);
 #endif
   if (!thread || strcmp(pg_string(&env, thread + 428), "main")) return;
+  pg_asi_calls = 0;   // a mod's game command that never returned can't leave the game's own reads ignored
   pg_asi_frame(instance);
   pg_trailer_tick(instance);
   pg_submarine_depth_tick(instance);
@@ -2739,6 +2756,7 @@ void pg_asi_script_tick(w2c_game *instance, u64 thread) {
   pg_test_missing_text(instance);
   pg_test_request_script(instance);
   pg_test_phone(instance);
+  pg_test_mod_dpad(instance);
   pg_test_race(instance);
   pg_test_blips(instance);
 #endif
@@ -3373,6 +3391,14 @@ int PGInputReadWithin(int action, double ms) {
   double at = atomic_load_explicit(&inputReadAt[action], memory_order_relaxed);
   return at > 0 && timeMS(CLOCK_MONOTONIC) - at < ms;
 }
+// The same for the game's own scripts only, not script mods: a mod that checks the frontend D-pad every frame with its
+// menu closed made the touch controls switch to the menu layout in normal play (GTA-213).
+static _Atomic double inputGameReadAt[400];
+int PGInputGameReadWithin(int action, double ms) {
+  if (action < 0 || action >= 400) return 0;
+  double at = atomic_load_explicit(&inputGameReadAt[action], memory_order_relaxed);
+  return at > 0 && timeMS(CLOCK_MONOTONIC) - at < ms;
+}
 static void pg_control_trace(u32 kind, u32 action, f32 value);
 void pg_control_read(u32 kind, u32 control, u32 action, f32 value) {
   (void)control;
@@ -3380,12 +3406,17 @@ void pg_control_read(u32 kind, u32 control, u32 action, f32 value) {
     double now = timeMS(CLOCK_MONOTONIC);
     atomic_store_explicit(&inputPolledAt[action], now, memory_order_relaxed);
     atomic_store_explicit(&inputReadAt[action], now, memory_order_relaxed);
+    if (!pg_asi_calls) atomic_store_explicit(&inputGameReadAt[action], now, memory_order_relaxed);
   }
   pg_control_trace(kind, action, value);
 }
 void pg_control_script_read(u32 kind, u32 control, u32 action, f32 value) {
   (void)control;
-  if (action < 400) atomic_store_explicit(&inputReadAt[action], timeMS(CLOCK_MONOTONIC), memory_order_relaxed);
+  if (action < 400) {
+    double now = timeMS(CLOCK_MONOTONIC);
+    atomic_store_explicit(&inputReadAt[action], now, memory_order_relaxed);
+    if (!pg_asi_calls) atomic_store_explicit(&inputGameReadAt[action], now, memory_order_relaxed);
+  }
   pg_control_trace(kind, action, value);
 }
 static void pg_control_trace(u32 kind, u32 action, f32 value) {

@@ -168,6 +168,8 @@ int PGLoadSceneSeconds(void);
 int PGInputPolledWithin(int action, double ms);
 /// Whether a script read input `action` in any way in the last `ms` milliseconds (for diagnostics; GTA-129).
 int PGInputReadWithin(int action, double ms);
+/// The same for the game's own scripts only: reads by script mods don't count (GTA-213).
+int PGInputGameReadWithin(int action, double ms);
 /// Presses Start (opens the pause menu, or closes it when open): held for the next three engine frames.
 void PGRequestPauseMenu(void);
 // Keyboard and mouse, through the game's own PC input (the block the browser build wrote): key
