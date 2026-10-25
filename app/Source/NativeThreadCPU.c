@@ -240,11 +240,21 @@ static void loadSymbols(void) {
   appLow = (uintptr_t)header; appHigh = (uintptr_t)slide + text->vmaddr + text->vmsize;
 }
 
+static pthread_once_t symbolsOnce = PTHREAD_ONCE_INIT;
+// The app function an address is in (NULL outside the app), for the trap log too (GTA-178).
+const char *pg_app_symbol(uintptr_t pc);
+
 static const Symbol *symbolAt(uintptr_t pc) {
   if (pc < appLow || pc >= appHigh || !symbolCount) return NULL;
   unsigned low = 0, high = symbolCount;
   while (high - low > 1) { unsigned mid = (low + high) / 2; if (symbols[mid].start <= pc) low = mid; else high = mid; }
   return symbols[low].start <= pc ? &symbols[low] : NULL;
+}
+
+const char *pg_app_symbol(uintptr_t pc) {
+  pthread_once(&symbolsOnce, loadSymbols);
+  const Symbol *symbol = symbolAt(pc);
+  return symbol ? symbol->name : NULL;
 }
 
 typedef struct { uintptr_t start; const char *name, *image; uint64_t self, in; uintptr_t caller; uint64_t fromCaller; } Function;
@@ -272,8 +282,7 @@ static int slotBySelf(const void *a, const void *b) { const Slot *x = *(Slot *co
 static void report(double seconds) {
   static Slot *busy[PROFILE_SLOTS];
   static Function functions[2048];
-  static int symbolsLoaded;
-  if (!symbolsLoaded) { symbolsLoaded = 1; loadSymbols(); }
+  pthread_once(&symbolsOnce, loadSymbols);
   for (unsigned g = 0; g < profileCount; g++) {
     if (!groupSamples[g]) continue;
     unsigned count = 0;

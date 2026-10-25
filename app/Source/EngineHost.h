@@ -41,6 +41,10 @@ void PGSetMinimapLayout(double dx, double dy, double scale);
 // Where help messages show (NativeAssets.m): the box's top-left corner in the game's HUD units (fractions of the
 // 16:9 HUD area from its top left; 0, 0 is the game's own place) and a size factor; before the engine starts.
 void PGSetHelpTextLayout(double x, double y, double scale);
+// HUD layout (GTA-197, NativeHudLayout.c): a piece's offset in the game's HUD units (fractions of the 16:9 HUD area, x to
+// the right, y down) and a size factor. Pieces: 0 character switch wheel, 1 phone (both apply live), 2 notification
+// feed, 3 top-right stats, 4 subtitles, 5 vehicle and area names (read from frontend.xml when the engine starts).
+void PGSetHudPiece(int32_t piece, double dx, double dy, double scale);
 bool PGUsingLocalGameFolder(void);
 // Before PGStartEngine: Self Radio's song list from the songs in musicFolder (GTA-5, Source/NativeUserMusic.c).
 // Returns how many songs it lists; the game shows the station with 3 or more.
@@ -71,6 +75,13 @@ bool PGModFileProblem(const char *path, char *why, size_t n);
 // Script mods (.asi): press or release a Windows virtual-key code for them; which keys they poll.
 void PGAsiSetKey(int virtualKey, bool down);
 bool PGAsiModKeys(uint8_t keys[256]);
+// One mod (.asi file name): the keys it checked while it ran, and whether it takes keyboard events (GTA-179).
+bool PGAsiModuleKeys(const char *module, uint8_t keys[256], bool *keyboardHandler);
+// Another key answers a mod's own key (GTA-181); cleared and set again whenever the player changes one.
+void PGAsiSetKeyRemap(const char *module, int modKey, int key);
+void PGAsiClearKeyRemaps(void);
+/// The mod whose script is still starting up over several frames, or NULL (GTA-209: the app shows "Loading <mod>").
+const char *PGAsiBusyModName(void);
 // What the Mod keys pad shows: see PGAsiKeyInfo in NativeASI.h.
 #include "NativeASI.h"
 void PGAsiGetKeyInfo(PGAsiKeyInfo *info);
@@ -88,8 +99,10 @@ typedef struct {
   bool helpDetonate;   // a help message asks for INPUT_DETONATE (explosives a mission planted)
   bool helpShown;      // a help message is on screen
   bool helpContext;    // ...and it asks for the context input (D-pad right)
+  bool contextPrompt;  // a script's context prompt waits for that input, with or without its help text (GTA-104)
   uint32_t helpInputs; // ...and the script inputs it names: bit n is input 218 + n (sticks 218-221, buttons 222-231, D-pad 232-235)
   bool radioWheelOpen; // the radio wheel is up
+  bool helpExit;       // a help message names INPUT_VEH_EXIT or INPUT_ENTER (Y on a controller), e.g. diving off the boat (GTA-189)
   uint32_t vehicleModel; // model name hash (joaat) of the vehicle the player is in, 0 on foot
   uint32_t pedModel;     // model name hash (joaat) of the player ped (a_c_chop while playing as Chop)
   bool trailerAttached;  // the player's vehicle pulls a trailer (the touch controls show Detach trailer)

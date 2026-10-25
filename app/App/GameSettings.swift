@@ -317,10 +317,21 @@ final class GameSettings {
     /// Touch controls › Help messages: where the game shows its help box ("Press … to …"). Its own place is the top left,
     /// where a minimap moved to the top covers it (and it covers the map), so then Top right is the default.
     enum HelpTextPlace: Int, CaseIterable {
-        case topLeft, topRight, bottomMiddle, custom
-        var title: String { [AppLanguage.choose("Top left"), AppLanguage.choose("Top right"), AppLanguage.choose("Bottom middle"), AppLanguage.choose("Custom")][rawValue] }
+        case topLeft = 0, topRight = 1, bottomMiddle = 2, custom = 3, topMiddle = 4
+        static var allCases: [HelpTextPlace] { [.topLeft, .topMiddle, .topRight, .bottomMiddle, .custom] }
+        var title: String {
+            switch self {
+            case .topLeft: return AppLanguage.choose("Top left")
+            case .topMiddle: return AppLanguage.choose("Top middle")
+            case .topRight: return AppLanguage.choose("Top right")
+            case .bottomMiddle: return AppLanguage.choose("Bottom middle")
+            case .custom: return AppLanguage.choose("Custom")
+            }
+        }
     }
-    var defaultHelpTextPlace: HelpTextPlace { minimapAtTop ? .topRight : .topLeft }
+    /// With the Controller buttons touch scheme on screen (GTA-195), LB sits under the top-left place: top middle then,
+    /// under the top bar (GTA-197). With a controller playing the game's own place stays.
+    var defaultHelpTextPlace: HelpTextPlace { minimapAtTop ? .topRight : GameSettings.hudContext == .pad ? .topMiddle : .topLeft }
     var helpTextPlace: HelpTextPlace {
         get { (defaults.object(forKey: "helpTextPlace") as? Int).flatMap(HelpTextPlace.init) ?? defaultHelpTextPlace }
         set { defaults.set(newValue.rawValue, forKey: "helpTextPlace") }
@@ -341,6 +352,7 @@ final class GameSettings {
         switch place {
         case .topLeft: return (0, 0, 1)
         case .topRight: return (0.742, 0, 1)
+        case .topMiddle: return (0.3835, 0.125, 1)
         case .bottomMiddle: return (0.354, 0.62, 1)
         case .custom: return helpTextCustom
         }
@@ -358,6 +370,22 @@ final class GameSettings {
         get { defaults.object(forKey: "selfRadioMode") as? Int ?? 2 }
         set { defaults.set(min(max(newValue, 0), 2), forKey: "selfRadioMode") }
     }
+    /// Settings › Touch controls › Touch scheme (GTA-195): the situational layout (default), or every Xbox controller
+    /// button on screen all the time (ControllerPadView). A Mac has no touch screen: always situational there.
+    enum TouchScheme: String, CaseIterable {
+        case situational, controller
+        var title: String { self == .situational ? AppLanguage.choose("Situational") : AppLanguage.choose("Controller buttons") }
+    }
+    var touchScheme: TouchScheme {
+        get {
+            #if targetEnvironment(macCatalyst)
+            return .situational
+            #else
+            return defaults.string(forKey: "touchScheme").flatMap(TouchScheme.init) ?? .situational
+            #endif
+        }
+        set { defaults.set(newValue.rawValue, forKey: "touchScheme") }
+    }
     /// Hide the touch controls while a game controller is connected (on by default).
     var hideTouchWithController: Bool {
         get { defaults.object(forKey: "hideTouchWithController") as? Bool ?? true }
@@ -367,7 +395,11 @@ final class GameSettings {
     /// Frame rate cap: 30, 60, or 0 for unlocked (up to the screen's refresh rate, 120 on ProMotion).
     var frameRateCap: Int {
         get {
-            if let cap = defaults.object(forKey: "frameRateCap") as? Int, [0, 30, 60].contains(cap) || cap == 40 && Self.supports40 { return cap }
+            // integer(forKey:) also reads "-frameRateCap 60" given as a launch argument (a string; device tests, GTA-200).
+            if defaults.object(forKey: "frameRateCap") != nil {
+                let cap = defaults.integer(forKey: "frameRateCap")
+                if [0, 30, 60].contains(cap) || cap == 40 && Self.supports40 { return cap }
+            }
             #if targetEnvironment(macCatalyst)
             if defaults.object(forKey: "sixtyFPS") == nil { return 0 } // Mac: unlocked by default, no battery or heat limit like a phone's
             #endif

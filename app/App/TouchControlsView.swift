@@ -115,6 +115,12 @@ final class ControlButton: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func setIcon(_ iconName: String) {
+        // Mod buttons (GTA-180) use SF Symbols from their icon library.
+        if iconName.hasPrefix("sf:") {
+            icon.image = (UIImage(systemName: String(iconName.dropFirst(3)), withConfiguration: UIImage.SymbolConfiguration(weight: .bold))
+                ?? UIImage(systemName: "circle", withConfiguration: UIImage.SymbolConfiguration(weight: .bold)))?.withRenderingMode(.alwaysTemplate)
+            return
+        }
         let image = iconName.hasPrefix("text:") ? ControlStyle.textIcon(String(iconName.dropFirst(5))) : UIImage(named: "icon_" + iconName)
             ?? UIImage(systemName: ControlStyle.fallbackSymbol[iconName] ?? "circle", withConfiguration: UIImage.SymbolConfiguration(weight: .bold))
             ?? UIImage(systemName: ControlStyle.olderSymbol[iconName] ?? "circle", withConfiguration: UIImage.SymbolConfiguration(weight: .bold))
@@ -184,7 +190,7 @@ final class FloatingStick: UIView {
     var travel: CGFloat = 48
     private(set) var origin = CGPoint.zero
     private(set) var value = CGPoint.zero
-    #if targetEnvironment(simulator)
+    #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
     /// Automation: a held stick without a finger (--test-touch-sprint).
     func testHold(_ point: CGPoint?) { value = point ?? .zero }
     #endif
@@ -386,7 +392,7 @@ final class TouchControlsView: UIView {
     /// Story mode only: the character switch button.
     var characterSwitchEnabled = false { didSet { if characterSwitchEnabled != oldValue { updateVisibility() } } }
     private var pedalClock: Double = 0
-    #if targetEnvironment(simulator)
+    #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
     /// Automation (--test-touch-sprint): the move stick held forward with Sprint latched, through the
     /// same code a finger and a tap on Sprint use.
     func testSprint(_ on: Bool) { moveStick.testHold(on ? CGPoint(x: 0, y: 1) : nil); sprintLatched = on }
@@ -456,6 +462,15 @@ final class TouchControlsView: UIView {
     /// Script mods (GTA-69): shown while one runs; opens the mod tray (ModKeysView).
     private let mods = ControlButton("mods", icon: "mods", label: AppLanguage.choose("Mods"))
     var modsActive = false { didSet { if modsActive != oldValue { updateVisibility(); setNeedsLayout() } } }
+    /// A controller (or keyboard and mouse) drives the game and Settings › "Hide touch controls with a controller" is
+    /// on: only Settings shows, plus Mods with script mods loaded, in their places from the player's layout (GTA-146).
+    /// Touches anywhere else go past the controls, as they did when the whole layer was hidden.
+    /// The Controller buttons touch scheme (GTA-195) is on: this view then shows only Settings, Mods and the player's
+    /// own mod buttons, placed and saved in the scheme's layout group (Kevin, 2026-10-25).
+    var padScheme = false { didSet { if padScheme != oldValue { updateVisibility(); setNeedsLayout() } } }
+    var controllerOnly = false {
+        didSet { if controllerOnly != oldValue { reset(publish: false); updateVisibility(); setNeedsLayout() } }
+    }
     var openMods: (() -> Void)?
     /// Where the Mods control is, for the tray that opens from it.
     var modsButtonFrame: CGRect? { mods.isHidden || mods.superview == nil ? nil : mods.frame }
@@ -483,14 +498,22 @@ final class TouchControlsView: UIView {
     /// Mission buttons (GTA-51): a script asks for one of its own inputs (INPUT_SCRIPT_*, engine ids
     /// 222-231) that no button on screen sends, e.g. "Press RT to flip the chair" in By the Book. The
     /// button shows while the script keeps polling it (the engine reports polls, PGInputPolledWithin).
-    private struct MissionButton { let input: Int32; let button: ControlButton; let pad: PadButtons?; let trigger: Int; var menuInput: Int32? = nil; var helpOnly = false }
+    /// `also`: other inputs the same pad button sends that ask for it too.
+    private struct MissionButton {
+        let input: Int32; let button: ControlButton; let pad: PadButtons?; let trigger: Int; var menuInput: Int32? = nil; var helpOnly = false; var also: [Int32] = []
+        var inputs: [Int32] { [input] + (menuInput.map { [$0] } ?? []) + also }
+    }
     private lazy var missionButtons: [MissionButton] = [
         MissionButton(input: 226, button: ControlButton("script_lb", icon: "script_lb", label: AppLanguage.choose("LB")), pad: .l1, trigger: 0, menuInput: 205),
         MissionButton(input: 228, button: ControlButton("script_lt", icon: "script_lt", label: AppLanguage.choose("LT")), pad: nil, trigger: 1, menuInput: 207),
         MissionButton(input: 229, button: ControlButton("script_rt", icon: "script_rt", label: AppLanguage.choose("RT")), pad: nil, trigger: 2, menuInput: 208),
         MissionButton(input: 227, button: ControlButton("script_rb", icon: "script_rb", label: AppLanguage.choose("RB")), pad: .r1, trigger: 0, menuInput: 206),
         MissionButton(input: 224, button: ControlButton("script_x", icon: "script_x", label: AppLanguage.choose("X")), pad: .x, trigger: 0),
-        MissionButton(input: 222, button: ControlButton("script_y", icon: "script_y", label: AppLanguage.choose("Y")), pad: .y, trigger: 0, menuInput: 204),
+        // Y is also INPUT_VEH_EXIT (75), which scripts read as a disabled control while player control is off, when the
+        // prompt layout has no Enter/Exit button: Monkey Business's "Press ~input_veh_exit~ to dive into the sea." (fbi5A,
+        // GTA-189), and the stash car in Grass Roots: The Drag, whose ignition fails until the player gets out (barry3c,
+        // GTA-191). The help naming it counts too (PGControlHints.helpExit).
+        MissionButton(input: 222, button: ControlButton("script_y", icon: "script_y", label: AppLanguage.choose("Y")), pad: .y, trigger: 0, menuInput: 204, also: [75]),
         MissionButton(input: 223, button: ControlButton("script_a", icon: "script_a", label: AppLanguage.choose("A")), pad: .a, trigger: 0),
         MissionButton(input: 225, button: ControlButton("script_b", icon: "script_b", label: AppLanguage.choose("B")), pad: .b, trigger: 0),
         MissionButton(input: 230, button: ControlButton("script_ls", icon: "script_ls", label: AppLanguage.choose("Left stick click")), pad: .l3, trigger: 0),
@@ -505,13 +528,24 @@ final class TouchControlsView: UIView {
     /// A script polls the frontend D-pad up and down (INPUT_FRONTEND_UP/DOWN, 188/187): a shop or script menu is
     /// open (the barber reads both). Down alone isn't a menu: after swipe-camera mouse movement a game script reads
     /// it every frame on foot, and the layout used to switch to the menu one (GTA-86).
-    private var scriptMenu: Bool { polledMission.isSuperset(of: [187, 188]) && context != .menu && !phoneDock }
+    /// A script screen reads the frontend D-pad up and down every frame with IS_CONTROL_JUST_PRESSED and the like, which
+    /// the poll check doesn't see, while player control stays on: the ATM (atm_trigger, "Exit (B)") does once its screen
+    /// takes input, about 4 s after Interact. The play layout had no Back, so a touch-only player couldn't leave the ATM
+    /// (GTA-202). Its frontend Accept and Back (201/202) don't tell: scripts poll those all through normal play. Read
+    /// without a break for 0.6 s, so a script that checks the D-pad once can't swap the layout; the phone keeps its dock.
+    private var frontendScreen = false
+    private var frontendSince: CFTimeInterval?
+    private var scriptMenu: Bool { (polledMission.isSuperset(of: [187, 188]) || frontendScreen) && context != .menu && !phoneDock }
     private var lastMissionLog = ""
     /// Inputs the help message on screen names (PGControlHints.helpInputs, bit n is input 218 + n): a mission asks for
     /// a button in its help ("Hold RT to grip a tooth" in By the Book) even when it reads the button in a way the poll
     /// check misses, so the help counts as asking (GTA-94).
+    /// A help that names INPUT_VEH_EXIT or INPUT_ENTER asks for Y (75, GTA-189).
     private var helpAsked: Set<Int32> {
-        hints.helpShown ? Set((0..<18).filter { hints.helpInputs & (1 << UInt32($0)) != 0 }.map { Int32(218 + $0) }) : []
+        guard hints.helpShown else { return [] }
+        var asked = Set((0..<18).filter { hints.helpInputs & (1 << UInt32($0)) != 0 }.map { Int32(218 + $0) })
+        if hints.helpExit { asked.insert(75) }
+        return asked
     }
     /// The help asks for the right stick ("Rotate R to pull it out"): the right side is a stick then, also with the
     /// swipe camera, whose mouse movement the mission doesn't read as the stick (GTA-94).
@@ -523,17 +557,35 @@ final class TouchControlsView: UIView {
     /// Mission triggers latched on (see padState): asked for together with the right stick.
     private var latchedTriggers: Set<Int32> = [], triggerWasPressed: Set<Int32> = []
     private var rightStickWasAsked = false
-    /// Called every frame with the engine's poll check (PGInputPolledWithin).
-    func updateMissionInputs(_ polled: (Int32) -> Bool) {
-        let next = Set((missionButtons.map(\.input) + missionButtons.compactMap(\.menuInput) + [218, 219, 220, 221, 187, 188, 189, 190, 19, 39]).filter(polled)).union(helpAsked)
+    /// When each mission button's inputs were last asked for. A mission button stays `missionButtonHold` seconds after
+    /// that, and as long as a finger holds it: Eye in the Sky reads RT only while the camera is on a target, so the scan
+    /// button came and went with every small camera movement and RT couldn't be held through a scan (GTA-163).
+    private var missionAskedAt: [Int32: CFTimeInterval] = [:]
+    private static let missionButtonHold: CFTimeInterval = 4
+    /// The mission buttons' inputs asked for now or within missionButtonHold, and those of mission buttons held down.
+    private var recentMission: Set<Int32> = []
+    /// Called every frame with the engine's poll check (PGInputPolledWithin) and its check for inputs scripts read in any
+    /// way just now (PGInputReadWithin, a short window).
+    func updateMissionInputs(now: CFTimeInterval = CACurrentMediaTime(), read: (Int32) -> Bool = { _ in false }, _ polled: (Int32) -> Bool) {
+        let missionInputs = Set(missionButtons.flatMap(\.inputs))
+        let next = Set((Array(missionInputs) + [218, 219, 220, 221, 187, 188, 189, 190, 19, 39]).filter(polled)).union(helpAsked)
+        let frontendRead = read(187) && read(188) && !gamePhoneOut
+        frontendSince = frontendRead ? (frontendSince ?? now) : nil
+        let frontend = frontendRead && now - (frontendSince ?? now) >= 0.6
         if helpAsksRightStick != rightStickWasAsked {
             rightStickWasAsked = helpAsksRightStick
             GameFolder.log("Touch layout: the right side is \(rightStickWasAsked ? "the right stick (the help asks for it)" : "the camera again")")
         }
-        if next != polledMission {
+        // Mission buttons show only while the game waits for the player (see shownMissionButtons); a wait that ends
+        // forgets what it asked for, so the next one starts without its buttons.
+        if context == .menu || phoneDock || !(promptActive || hints.helpShown || scriptMenu) { missionAskedAt.removeAll() }
+        else { for input in next.intersection(missionInputs) { missionAskedAt[input] = now } }
+        var recent = Set(missionAskedAt.filter { now - $0.value < Self.missionButtonHold }.keys)
+        for mission in missionButtons where mission.button.pressed { recent.insert(mission.input) }
+        if next != polledMission || recent != recentMission || frontend != frontendScreen {
             let menuWas = scriptMenu
-            polledMission = next; updateVisibility(); setNeedsLayout()
-            if scriptMenu != menuWas { GameFolder.log("Touch layout: script menu \(scriptMenu ? "on" : "off") (inputs \(next.sorted().map(String.init).joined(separator: ",")))") }
+            polledMission = next; recentMission = recent; frontendScreen = frontend; updateVisibility(); setNeedsLayout()
+            if scriptMenu != menuWas { GameFolder.log("Touch layout: script menu \(scriptMenu ? "on" : "off") (inputs \(next.sorted().map(String.init).joined(separator: ","))\(frontend ? "; a script screen reads the frontend D-pad" : ""))") }
         }
     }
     /// The mission buttons to show now: polled, and not already covered by a button on screen.
@@ -547,10 +599,11 @@ final class TouchControlsView: UIView {
         if list.contains(where: { $0 === back }) { covered.insert(225) }
         if list.contains(where: { $0 === promptOption }) { covered.insert(224) }
         if list.contains(where: { $0 === up }) { covered.formUnion([232, 233, 234]) }		// the D-pad is on screen
+        if list.contains(where: { $0 === enter }) { covered.insert(75) }		// Enter/Exit sends Y
         let both = polledMission.isSuperset(of: [228, 229]) || polledMission.isSuperset(of: [207, 208])
         if both { covered.formUnion([228, 229]) }
         let help = helpAsked
-        let asked = { (m: MissionButton) in m.helpOnly ? help.contains(m.input) : self.polledMission.contains(m.input) || (m.menuInput.map(self.polledMission.contains) ?? false) }
+        let asked = { (m: MissionButton) in m.helpOnly ? help.contains(m.input) : m.inputs.contains { self.recentMission.contains($0) && !covered.contains($0) } }
         return (both ? [bothTriggers] : []) + missionButtons.filter { asked($0) && !covered.contains($0.input) }.map(\.button)
     }
     private let tabLeft = ControlButton("tabLeft", icon: "tab_left", label: AppLanguage.choose("Previous tab"))
@@ -560,7 +613,36 @@ final class TouchControlsView: UIView {
         missionButtons.map(\.button) + [fire, aim, leftFire, jump, sprint, enter, weapons, reload, cover, crouch, switcher, special, interact, detonate, zoomIn, zoomOut,
          weaponPrev, weaponNext, gas, brake, handbrake, bikeJump, steerLeft, steerRight, driveBy, driveAim, duck, horn, lookBack,
          vehicleWeapon, towHook, towArmUp, towArmDown, roof, detachTrailer, dive, surface, airFire, gear, throttleUp, throttleDown, yawLeft, yawRight, camera, phone, pause, settings, mods, lights, radio, nextSong,
-         up, down, left, right, accept, back, phoneOption, taxiHurry, taxiStop, tabLeft, tabRight, promptOption, bothTriggers]
+         up, down, left, right, accept, back, phoneOption, taxiHurry, taxiStop, tabLeft, tabRight, promptOption, bothTriggers] + modButtons.map(\.button)
+    }
+
+    // MARK: Mod buttons (GTA-180)
+
+    /// The player's on-screen buttons for script mods' keys (Settings › Mods › a script mod): each holds its keys down
+    /// while touched. Shown while script mods run, always, in any vehicle or in one vehicle model.
+    private var modButtons: [(button: ControlButton, spec: ModButton)] = []
+    private var modButtonsObserver: NSObjectProtocol?
+    private func reloadModButtons() {
+        for (button, _) in modButtons { button.removeFromSuperview() }
+        modButtons = ModButton.all.map { spec in
+            let button = ControlButton("mod." + spec.id, icon: spec.icon, label: spec.label)
+            button.alpha = 0
+            addSubview(button)
+            return (button, spec)
+        }
+        updateVisibility()
+    }
+    private func modButtonShows(_ spec: ModButton) -> Bool {
+        switch spec.show {
+        case .always: return true
+        case .vehicle: return context != .onFoot
+        case .model: return context != .onFoot && (editing || hints.vehicleModel == spec.model)
+        }
+    }
+    /// Presses or releases a mod button's keys (as the mod sees them: a key another one answers is pressed as that one).
+    private func setModKeys(_ button: ControlButton, _ down: Bool) {
+        guard let spec = modButtons.first(where: { $0.button === button })?.spec else { return }
+        for key in down ? spec.keys : spec.keys.reversed() { PGAsiSetKey(Int32(ModKeyRemap.pressed(mod: spec.mod, modKey: key)), down) }
     }
     /// Refresh accessibility names for the active language without recreating controls.
     func refreshLanguage() {
@@ -642,7 +724,10 @@ final class TouchControlsView: UIView {
         for button in allButtons { button.alpha = 0; addSubview(button) }
         for pedal in [gas, brake, dive, surface, throttleUp, throttleDown] { pedal.isPedal = true }
         for button in [gas, brake, handbrake, dive, surface, throttleUp, throttleDown] { button.slideTarget = true }
-        updateVisibility()
+        reloadModButtons()
+        modButtonsObserver = NotificationCenter.default.addObserver(forName: ModButton.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.reset(); self?.reloadModButtons()
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -662,6 +747,11 @@ final class TouchControlsView: UIView {
     }
 
     private func computeVisible() -> [ControlButton] {
+        if padScheme && editing { return modButtons.filter { modButtonShows($0.spec) }.map(\.button) }
+        if controllerOnly && !editing {
+            let ownMods = padScheme && modsActive && context != .menu ? modButtons.filter { modButtonShows($0.spec) }.map(\.button) : []
+            return (modsActive ? [settings, mods] : [settings]) + ownMods
+        }
         var list = baseVisible()
         if (modsActive || editing) && list.contains(settings) { list.append(mods) }
         if !editing { list += shownMissionButtons(besides: list) }
@@ -673,9 +763,10 @@ final class TouchControlsView: UIView {
         let switchAsked = promptActive && !phoneDock &&
             (hints.pedModel == ControlStyle.chop || (polledMission.contains(19) && !gamePaused))
         if characterSwitchEnabled, playing || switchAsked, context != .menu { list.append(switcher) }
+        if (modsActive && playing) || (editing && context != .menu) { list += modButtons.filter { modButtonShows($0.spec) }.map(\.button) }
         // In the layout editor every situational button shows, so it can be placed.
         if editing && !context.flying {
-            list += context == .onFoot ? [special, interact, detonate, zoomIn, zoomOut, weaponPrev, weaponNext] : [special, interact, detonate, towHook, towArmUp, towArmDown, roof]
+            list += context == .onFoot ? [special, interact, detonate, zoomIn, zoomOut, weaponPrev, weaponNext, leftFire] : [special, interact, detonate, towHook, towArmUp, towArmDown, roof]
             return list
         }
         // Situational buttons, shown only while they do something (engine state, PGReadControlHints).
@@ -683,7 +774,7 @@ final class TouchControlsView: UIView {
             if hints.specialShown && !aimActive { list.append(special) }
             if hints.canDetonate || hints.helpDetonate { list.append(detonate) }
             // "Press D-pad right to ..." prompts come in vehicles too (Los Santos Customs, garages).
-            if hints.helpContext && !aimActive { list.append(interact) }
+            if asksInteract && !aimActive { list.append(interact) }
             if context == .onFoot && aimActive { list += [zoomIn, zoomOut] }
             if context == .onFoot && has(isWeaponWheel) { list += [weaponPrev, weaponNext] }
             // The hook and the roof are D-pad right like the headlights, so they get their own buttons.
@@ -692,6 +783,10 @@ final class TouchControlsView: UIView {
             if context == .car && ControlStyle.convertibles.contains(hints.vehicleModel) { list.append(roof) }
             if context == .car && hints.trailerAttached { list.append(detachTrailer) }
         }
+        // In aircraft too: Eye in the Sky's "Press ~INPUT_SCRIPT_PAD_RIGHT~ to toggle the thermal vision mode" comes with
+        // player control on in the police helicopter, whose layout had no Interact, and the mission waits for thermal
+        // vision before it goes on (GTA-163).
+        if playing && context.flying && asksInteract { list.append(interact) }
         if playing && context == .heli && ControlStyle.cargobobs.contains(hints.vehicleModel) { list.append(towHook) }
         if playing && context.driving && hints.selfRadioPlaying { list.append(nextSong) }
         return list
@@ -700,17 +795,20 @@ final class TouchControlsView: UIView {
     /// Engine state for the situational buttons; called every frame.
     func updateHints(_ next: PGControlHints) {
         let changed = next.helpShown != hints.helpShown || next.specialShown != hints.specialShown || next.canDetonate != hints.canDetonate || next.helpContext != hints.helpContext
-            || next.helpDetonate != hints.helpDetonate
+            || next.contextPrompt != hints.contextPrompt || next.helpDetonate != hints.helpDetonate
             || next.vehicleModel != hints.vehicleModel || next.passenger != hints.passenger || next.taxiMenu != hints.taxiMenu || next.phoneBrowser != hints.phoneBrowser
             || next.pedModel != hints.pedModel || next.trailerAttached != hints.trailerAttached || next.selfRadioPlaying != hints.selfRadioPlaying
         if changed || next.specialReady != hints.specialReady || next.specialActive != hints.specialActive || next.radioWheelOpen != hints.radioWheelOpen {
-            hintsChanged?("Control hints: special \(next.specialShown ? (next.specialActive ? "active" : next.specialReady ? "ready" : "charging") : "none") \(Int(next.specialFill * 100))%, detonate \(next.canDetonate), help \(next.helpShown ? (next.helpContext ? "asks for interact" : "shown") : "none"), radio wheel \(next.radioWheelOpen ? "open" : "closed"), vehicle model 0x\(String(next.vehicleModel, radix: 16))")
+            hintsChanged?("Control hints: special \(next.specialShown ? (next.specialActive ? "active" : next.specialReady ? "ready" : "charging") : "none") \(Int(next.specialFill * 100))%, detonate \(next.canDetonate), help \(next.helpShown ? (next.helpContext ? "asks for interact" : "shown") : "none")\(next.contextPrompt ? ", context prompt waiting" : ""), radio wheel \(next.radioWheelOpen ? "open" : "closed"), vehicle model 0x\(String(next.vehicleModel, radix: 16))")
         }
         hints = next
         special.active = next.specialActive
         special.setProgress(next.specialActive ? 0 : CGFloat(next.specialFill))
         if changed { updateVisibility() }
     }
+    /// The game waits for the context input (D-pad right, the interact button): a help names it, or a script's context
+    /// prompt is registered whose help text the game files don't have, such as the car garage's exit (GTA-104).
+    private var asksInteract: Bool { hints.helpContext || hints.contextPrompt }
     /// A taxi ride with the destination menu (the taxiservice script runs, the player is a passenger).
     private var taxiRide: Bool { hints.passenger && hints.taxiMenu && hints.vehicleModel == ControlStyle.taxi }
     private func baseVisible() -> [ControlButton] {
@@ -739,11 +837,11 @@ final class TouchControlsView: UIView {
             // A prompt that asks for INPUT_CONTEXT gets the interact button: D-pad right sends it too, but nothing
             // says so, and without the D-pad there was no way at all, e.g. standing up from a safehouse couch where the
             // stick changes the TV channel (GTA-82), or drinking more whiskey at Trevor's (log 602).
-            let contextButton: [ControlButton] = hints.helpContext ? [interact] : []
+            let contextButton: [ControlButton] = asksInteract ? [interact] : []
             return [camera, pause, settings] + (stick ? [] : [up, down, left, right]) + contextButton + [accept, back, promptOption]
         }
         if tvCouch && !editing {
-            return [camera, phone, pause, settings, up, down, left, right] + (hints.helpContext ? [interact] : [])
+            return [camera, phone, pause, settings, up, down, left, right] + (asksInteract ? [interact] : [])
         }
         // A taxi ride: the destination menu takes D-pad left/right to change and A to choose.
         if taxiRide && !editing {
@@ -820,7 +918,7 @@ final class TouchControlsView: UIView {
     var showingPrompt: Bool { promptActive }
 
     /// The saved-layout group for the current controls: on foot, or any vehicle.
-    var layoutGroup: String { context == .onFoot ? "foot" : "vehicle" }
+    var layoutGroup: String { padScheme ? ControllerPadView.layoutGroup : context == .onFoot ? "foot" : "vehicle" }
     private func hiddenByPlayer(_ button: ControlButton) -> Bool {
         context != .menu && !phoneDock && (ControlsLayout.entry(group: layoutGroup, name: button.name)?.hidden ?? false)
     }
@@ -866,16 +964,20 @@ final class TouchControlsView: UIView {
         super.layoutSubviews()
         let safe = bounds.inset(by: safeAreaInsets)
         guard safe.width > 0, safe.height > 0 else { return }
-        let scale = max(0.8, min(1.25, min(safe.width / 832, safe.height / 407))) * CGFloat(GameSettings.shared.controlScale)
+        let thumbs = Self.thumbArea(safe, phone: phoneScreen)
+        let scale = max(0.8, min(1.25, min(thumbs.width / 832, thumbs.height / 407))) * CGFloat(GameSettings.shared.controlScale)
+        /// A point in the whole safe area: the top bar, the menu tabs and the player's own layout.
         func point(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint { CGPoint(x: safe.minX + fx * safe.width, y: safe.minY + fy * safe.height) }
-        func place(_ button: ControlButton, _ fx: CGFloat, _ fy: CGFloat, _ size: CGFloat) {
+        /// A point where the thumbs reach (thumbArea): the default places of the play controls.
+        func thumb(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint { CGPoint(x: thumbs.minX + fx * thumbs.width, y: thumbs.minY + fy * thumbs.height) }
+        func place(_ button: ControlButton, _ fx: CGFloat, _ fy: CGFloat, _ size: CGFloat, whole: Bool = false) {
             let d = max(44, size * scale)
             button.bounds.size = CGSize(width: d, height: d)
-            button.center = point(fx, fy)
+            button.center = whole ? point(fx, fy) : thumb(fx, fy)
         }
         func pedal(_ button: ControlButton, _ fx: CGFloat, _ fy: CGFloat, _ w: CGFloat, _ h: CGFloat) {
             button.bounds.size = CGSize(width: w * scale, height: h * scale)
-            button.center = point(fx, fy)
+            button.center = thumb(fx, fy)
         }
         moveStick.frame = bounds
         rightStick.frame = bounds
@@ -883,14 +985,16 @@ final class TouchControlsView: UIView {
         lookStick.baseDiameter = 120 * scale; lookStick.travel = 48 * scale
         moveStick.baseDiameter = 120 * scale; moveStick.travel = 48 * scale
         rightStick.baseDiameter = 128 * scale; rightStick.travel = 52 * scale
-        rightStick.idleOrigin = planeStickEnabled ? point(0.80, 0.60) : nil
+        rightStick.idleOrigin = planeStickEnabled ? thumb(0.80, 0.60) : nil
 
         // Utility bar, top centre: rare actions in the hard-to-reach zone.
         let order = [radio, nextSong, lights, camera, phone, pause, settings, mods]
-        let bar = order.filter { visible.contains($0) }
+        // With only Settings and Mods showing (GTA-146) they keep their places from the on-foot bar.
+        let inBar = controllerOnly && !editing ? [camera, phone, pause, settings] + (modsActive ? [mods] : []) : visible
+        let bar = order.filter { inBar.contains($0) }
         for (i, button) in bar.enumerated() {
             let offset = (CGFloat(i) - CGFloat(bar.count - 1) / 2) * 54 * scale / safe.width
-            place(button, 0.5 + offset, 0.08, 40)
+            place(button, 0.5 + offset, 0.08, 40, whole: true)
         }
 
         // On foot: the primary action sits under the resting right thumb.
@@ -913,8 +1017,8 @@ final class TouchControlsView: UIView {
         // In the middle of the weapon wheel, which the game draws at the centre of the screen.
         let centreX = (bounds.midX - safe.minX) / safe.width, centreY = (bounds.midY - safe.minY) / safe.height
         let gap = 34 * scale / safe.width
-        place(weaponPrev, centreX - gap, centreY, 50)
-        place(weaponNext, centreX + gap, centreY, 50)
+        place(weaponPrev, centreX - gap, centreY, 50, whole: true)
+        place(weaponNext, centreX + gap, centreY, 50, whole: true)
 
         // Ground vehicles: analog steering on the left, pedals on the right.
         pedal(gas, 0.905, 0.72, 74, 108)
@@ -947,7 +1051,7 @@ final class TouchControlsView: UIView {
         place(yawRight, 0.775, 0.86, 54)
 
         // Menus and the phone: a D-pad on the left, accept/back on the right.
-        let stepX = 58 * scale / safe.width, stepY = 58 * scale / safe.height
+        let stepX = 58 * scale / thumbs.width, stepY = 58 * scale / thumbs.height
         place(up, 0.12, 0.70 - stepY, 52)
         place(down, 0.12, 0.70 + stepY, 52)
         place(left, 0.12 - stepX, 0.70, 52)
@@ -964,8 +1068,14 @@ final class TouchControlsView: UIView {
         for (index, button) in mission.enumerated() {
             place(button, 0.5 + (CGFloat(index) - CGFloat(mission.count - 1) / 2) * missionStep, 0.27, 52)
         }
-        place(tabLeft, 0.05, 0.12, 46)
-        place(tabRight, 0.95, 0.12, 46)
+        place(tabLeft, 0.05, 0.12, 46, whole: true)
+        place(tabRight, 0.95, 0.12, 46, whole: true)
+        // Mod buttons: columns left of centre, clear of the sticks, until the player moves them. With the Controller
+        // buttons scheme: rows right of centre, between RB and the right stick, clear of its buttons.
+        for (index, button) in modButtons.map(\.button).filter({ visible.contains($0) }).enumerated() {
+            if padScheme { place(button, 0.56 + CGFloat(index % 4) * 0.07, 0.26 + CGFloat(index / 4) * 0.12, 46) }
+            else { place(button, 0.30 + CGFloat(index / 4) * 0.075, 0.24 + CGFloat(index % 4) * 0.14, 46) }
+        }
 
         // The player's own layout (Edit controls layout): moved and resized controls. Hit areas
         // follow, since touches test each control's frame.
@@ -978,6 +1088,21 @@ final class TouchControlsView: UIView {
             }
         }
         updateHighlight()
+    }
+
+    /// Where the play controls' default places go: the whole safe area, except on a phone screen taller than the
+    /// iPhone Duo's outer screen (its inner screen, 951×669 points, GTA-185). There they keep the outer screen's 466
+    /// points at the bottom, so the thumbs reach them as on a phone; the top bar and the menu tabs stay at the top.
+    static func thumbArea(_ safe: CGRect, phone: Bool) -> CGRect {
+        let reach: CGFloat = 466
+        guard phone, safe.height > reach + 20 else { return safe }
+        return CGRect(x: safe.minX, y: safe.maxY - reach, width: safe.width, height: reach)
+    }
+    private var phoneScreen: Bool {
+        #if targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--test-window") { return true }   // the Duo's sizes on a bigger simulator
+        #endif
+        return traitCollection.userInterfaceIdiom == .phone
     }
 
     // MARK: Layout editor support
@@ -1011,7 +1136,9 @@ final class TouchControlsView: UIView {
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        isHidden ? nil : self
+        if isHidden { return nil }
+        // Controller only: just the shown buttons take touches (GTA-146).
+        return controllerOnly && !editing && button(at: point) == nil ? nil : self
     }
 
     // MARK: Touches
@@ -1076,6 +1203,7 @@ final class TouchControlsView: UIView {
         haptics.impactOccurred(intensity: 0.6)
         button.setPressed(true)
         roles[id] = .button(button)
+        setModKeys(button, true)
         defer { if case .fireLook = roles[id] { dragOrigins[id] = (point, point) } }
         switch button {
         case weapons:
@@ -1217,6 +1345,7 @@ final class TouchControlsView: UIView {
             if button !== aim { lastFireTime = CACurrentMediaTime() }
         case .button(let button):
             button.setPressed(false)
+            setModKeys(button, false)
             if button === enter { exitHoldStart = nil; enter.setProgress(0) }
         }
     }
@@ -1274,7 +1403,7 @@ final class TouchControlsView: UIView {
                 if keepStickFinger { roles[id] = context.driving ? .moveStick : .steer; continue }
                 moveStick.end()
             case .planeStick: rightStick.end()
-            case .button(let button), .fireLook(let button): button.setPressed(false)
+            case .button(let button), .fireLook(let button): button.setPressed(false); setModKeys(button, false)
             case .radioWheel: radio.setPressed(false)
             case .weaponWheel: weapons.setPressed(false)
             case .characterWheel: switcher.setPressed(false)
@@ -1299,7 +1428,7 @@ final class TouchControlsView: UIView {
 
     /// The current controller state. `elapsed` turns finger travel into a
     /// stick deflection, so the camera turns about as far as the finger moves.
-    #if targetEnvironment(simulator)
+    #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
     /// Test (PG_TEST_PRESS="driveAim@50-70,driveBy@72-74"): holds named buttons in those windows (seconds after
     /// WORLD_READY), as a finger would, to check what a button does in the game.
     func applyTestPresses(sinceWorld seconds: Double) {
@@ -1352,10 +1481,13 @@ final class TouchControlsView: UIView {
             }
         }
         return [
-            "context": "\(context)", "prompt": promptActive, "phoneDock": phoneDock, "gamePhoneOut": gamePhoneOut,
+            "context": "\(context)", "prompt": promptActive, "scriptMenu": scriptMenu, "phoneDock": phoneDock, "gamePhoneOut": gamePhoneOut,
             "aim": aimToggled, "sprintLatched": sprintLatched, "roles": roleNames,
             "help": hints.helpShown, "helpInputs": hints.helpInputs, "pedModel": hints.pedModel, "vehicleModel": hints.vehicleModel,
-            "trailer": hints.trailerAttached,
+            "trailer": hints.trailerAttached, "helpExit": hints.helpExit,
+            // The inputs scripts polled (the layouts follow these) and read in any way, in the last 0.7 s (GTA-163).
+            "polled": (0..<400).filter { PGInputPolledWithin(Int32($0), 700) != 0 }, "read": (0..<400).filter { PGInputReadWithin(Int32($0), 700) != 0 },
+            "missionPolled": polledMission.sorted(), "missionRecent": recentMission.sorted(),
             "visible": visible.map { ["name": $0.name, "at": frame($0), "pressed": $0.pressed] as [String: Any] },
             "size": [Double(size.width), Double(size.height)],
         ]
@@ -1515,6 +1647,10 @@ final class TouchControlsView: UIView {
             if airFire.pressed { held.insert(.a) }
             if gear.pressed { held.insert(.l3) }
             if towHook.pressed { held.insert(.right) }   // the Cargobob's hook
+            // Interact is D-pad right here too: Eye in the Sky's helicopter camera (the player in the back seat) asks
+            // "Press ~INPUT_SCRIPT_PAD_RIGHT~ to toggle the thermal vision mode" and reads INPUT_CONTEXT; the button
+            // showed but sent nothing in a helicopter, so the thermal camera never came on (GTA-163).
+            if interact.pressed { held.insert(.right) }
             if let start = exitHoldStart {
                 // Leaving an aircraft needs a short hold, so a slip cannot bail out.
                 let progress = (now - start) / 0.4

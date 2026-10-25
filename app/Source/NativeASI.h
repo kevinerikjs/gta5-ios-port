@@ -42,5 +42,11 @@ void pg_asi_key_info(PGAsiKeyInfo *info);
 // GetKeyState since start: the on-screen Mod keys pad offers these. Returns true when a mod also
 // registered a keyboard handler (it may react to any key).
 bool pg_asi_polled_keys(uint8_t polled[256]);
+// One mod (by .asi file name): the keys it asked about while it ran, and whether it registered a keyboard handler.
+// False when no such mod is loaded.
+bool pg_asi_module_keys(const char *name, uint8_t polled[256], bool *keyboardHandler);
+// A key that answers a mod's own key (GTA-181): that mod sees `key` as `modKey`, and no longer sees `modKey` itself.
+void pg_asi_set_key_remap(const char *module, int modKey, int key);
+void pg_asi_clear_key_remaps(void);
 // Interpreter time spent in the last tick, in microseconds, and instructions executed.
 void pg_asi_stats(uint64_t *microseconds, uint64_t *instructions);

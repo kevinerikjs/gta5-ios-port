@@ -105,11 +105,15 @@ final class PlayStats {
     private var fps: [Double] = []
     private var thermal = 0
     private var missions = 0
+    /// Health ticks with a game controller connected, of all ticks with a frame rate (GTA-200).
+    private var controllerTicks = 0
     private var mission = ""
     private var missionStarted: CFTimeInterval = 0
     private var missionFailed = false
     private var mods = 0, scriptMods = 0, addonPacks = 0
     private var lastLine = ""
+    /// The cause the stop panel named (StopCause.Kind, GTA-178), for engine_stop.
+    private var stopCause = ""
     private var lastGameStart: CFTimeInterval = 0
 
     func gameStarting(_ mode: GameMode, sandboxMap: Int) {
@@ -117,6 +121,7 @@ final class PlayStats {
     }
 
     func line(_ line: String) {
+        if line.hasPrefix("Stop cause: ") { stopCause = String(line.dropFirst(12).prefix { $0 != " " }); return }
         defer { lastLine = line }
         if line == "WORLD_READY" {
             let now = CACurrentMediaTime()
@@ -139,7 +144,8 @@ final class PlayStats {
         } else if line == "The engine stopped: showing Send log and Settings." {
             // The line before says why (a trap, or an engine error); only its first words, without paths or addresses.
             let reason = lastLine.replacingOccurrences(of: #"(/[^ ]+)|(0x[0-9a-fA-F]+)"#, with: "…", options: .regularExpression)
-            Analytics.shared.track("engine_stop", ["reason": String(reason.prefix(120)), "minutes": minutes, "mode": mode])
+            Analytics.shared.track("engine_stop", ["reason": String(reason.prefix(120)), "cause": stopCause.isEmpty ? "unknown" : stopCause, "minutes": minutes, "mode": mode])
+            stopCause = ""
             sessionEnded(); started = nil
         }
     }
@@ -147,9 +153,9 @@ final class PlayStats {
     private var minutes: Double { started.map { (CACurrentMediaTime() - $0) / 60 } ?? 0 }
 
     /// Every 10 s while playing: the frame rate, how hot the phone is, and the mission running.
-    func health(fps value: Double, thermal state: Int, mission name: String?, failedScreen: Bool) {
+    func health(fps value: Double, thermal state: Int, mission name: String?, failedScreen: Bool, controller: Bool = false) {
         guard started != nil else { return }
-        if value > 0 { fps.append(value) }
+        if value > 0 { fps.append(value); if controller { controllerTicks += 1 } }
         thermal = max(thermal, state)
         // The story context says "fbi5A (FIB5)": the script name is the mission.
         guard let name = name.map({ String($0.prefix { $0 != " " }) }) else { return }
@@ -170,8 +176,11 @@ final class PlayStats {
         let sorted = fps.sorted()
         var values: [String: Any] = ["mode": mode, "minutes": minutes, "missions": missions, "max_thermal": ["nominal", "fair", "serious", "critical"][min(3, thermal)]]
         if !sorted.isEmpty { values["avg_fps"] = sorted.reduce(0, +) / Double(sorted.count); values["min_fps"] = sorted[sorted.count / 20] }
+        // The frame rate chosen and whether a controller was mostly connected, so frame rates compare like for like (GTA-200).
+        values["fps_cap"] = GameSettings.shared.frameRateCap
+        values["controller"] = !sorted.isEmpty && controllerTicks * 2 > sorted.count
         Analytics.shared.track("session_end", values)
-        started = CACurrentMediaTime(); fps = []; thermal = 0; missions = 0
+        started = CACurrentMediaTime(); fps = []; thermal = 0; missions = 0; controllerTicks = 0
     }
 
 }

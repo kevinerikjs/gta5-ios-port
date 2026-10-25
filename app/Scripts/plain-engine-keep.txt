@@ -1,0 +1,7 @@
+# Engine functions that stay atomic whatever set prepare_plain_engine.py is given (GTA-187).
+# From the hand-off review: the one render hand-off with no atomic on
+# either side. f43770 clears the "render lists built" flag at 21383856 with an ordinary store and the other two poll it
+# with ordinary loads. Today only the calls into other game_N.c files around the store keep it in order.
+43770   # BuildRenderListsFromPVS_Dependency
+43785   # CPostScan::WaitForPostScanHelper
+43951   # CGtaRenderThreadGameInterface::PerformSafeModeOperations

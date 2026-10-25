@@ -1,4 +1,4 @@
-#if targetEnvironment(simulator)
+#if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
 import Network
 import UIKit
 
@@ -15,6 +15,9 @@ import UIKit
 ///     drag <finger> <x0> <y0> <x1> <y1> <seconds> [hold]   moves over that time, lifts after `hold` more seconds
 ///     pad <a+up|-> <seconds> [lx ly rx ry lt rt]          controller input, merged like a real controller's
 ///     mark <text>                          a line in the game log
+///     scheme situational|controller        Settings › Touch scheme, as the setting does (GTA-195)
+///     open controls | open layout          Settings › Touch controls; the controls layout editor
+///     editor <group> [reset | <name> <x> <y> [scale] [hide]]   layout editor: a group (foot, vehicle, aircraft, pad), reset, a control moved
 ///     sendlog <save 0|1> <note>            Send log to the developer, as its screen does (PG_LOG_ENDPOINT: a local catcher)
 final class DebugChannel {
     static let shared = DebugChannel()
@@ -70,7 +73,17 @@ final class DebugChannel {
             _ = done.wait(timeout: .now() + 90)
             return Self.json(["ok": true, "title": reply.0, "detail": reply.1])
         }
-        if ["ui", "touch", "tap", "drag", "pad", "mark", "resize", "alert", "play", "screen", "mouse", "open"].contains(command) {
+        if command == "hudedit" {
+            // hudedit <piece> <dx> <dy> [scale] | reset <piece>|all | frames | done: the HUD layout editor on screen (GTA-197).
+            var reply: [String: Any] = [:]
+            DispatchQueue.main.sync {
+                var top: UIViewController? = self.controller
+                while let next = top?.presentedViewController { top = next }
+                reply = (top as? HUDLayoutEditorController)?.debugEdit(Array(words.dropFirst())) ?? ["ok": false, "error": "no HUD layout editor on screen (open hud)"]
+            }
+            return Self.json(reply)
+        }
+        if ["ui", "touch", "tap", "drag", "pad", "mark", "resize", "alert", "play", "screen", "mouse", "open", "modbutton", "modremap", "modkey", "spawn", "teststop", "stopfix", "scheme", "editor"].contains(command) {
             var reply: [String: Any] = [:]
             DispatchQueue.main.sync { reply = self.runOnMain(command, Array(words.dropFirst())) }
             return Self.json(reply)
@@ -196,7 +209,82 @@ final class DebugChannel {
             while let next = top?.presentedViewController { top = next }
             if arguments.first == "mods" { top?.present(UINavigationController(rootViewController: ModsViewController()), animated: false); return ["ok": true] }
             if arguments.first == "close" { top?.dismiss(animated: false); return ["ok": true] }
-            return ["ok": false, "error": "open mods|close"]
+            // open hud [piece]: Settings › HUD layout, with that piece chosen (GTA-197).
+            if arguments.first == "hud" {
+                let editor = HUDLayoutEditorController(select: arguments.count > 1 ? HUDPiece(rawValue: arguments[1]) : nil)
+                editor.onDone = { [weak controller] in controller?.debugHUDLayoutChanged() }
+                top?.present(editor, animated: false); return ["ok": true]
+            }
+            // open controls: Settings › Touch controls; open layout: the controls layout editor (GTA-195 tests).
+            if arguments.first == "controls" {
+                let page = SettingsViewController(engineRunning: true, title: AppLanguage.choose("Touch controls"), sections: [.controls])
+                let navigation = UINavigationController(rootViewController: page)
+                Theme.styleNavigation(navigation)
+                top?.present(navigation, animated: false); return ["ok": true]
+            }
+            if arguments.first == "layout" {
+                let editor = ControlsLayoutEditorController()
+                editor.modalPresentationStyle = .fullScreen
+                top?.present(editor, animated: false); return ["ok": true]
+            }
+            // open modkeys <mod>: that mod's keys list (GTA-179); open modbutton <keys> <mod>: its on-screen button
+            // editor (GTA-180); open modchooser <key> <mod>: the key that presses it (GTA-181). Keys: 114 or 74+97.
+            if arguments.count >= 2, ["modkeys", "modbutton", "modchooser"].contains(arguments[0]) {
+                let name = arguments.dropFirst(arguments[0] == "modkeys" ? 1 : 2).joined(separator: " ")
+                guard let mod = ModInstaller.installed().first(where: { $0.name == name }) else { return ["ok": false, "error": "no mod \(name)"] }
+                let keys = arguments[0] == "modkeys" ? [] : arguments[1].split(separator: "+").compactMap { Int($0) }
+                let screen: UIViewController
+                switch arguments[0] {
+                case "modbutton": screen = ModButtonEditorViewController(mod: mod.name, binding: ModKeys.Binding(keys: keys, source: .settings, setting: "", reason: "", file: ""))
+                case "modchooser": screen = ModKeyChooserViewController(mod: mod.name, modKey: keys.first ?? 0)
+                default: screen = ModKeysListViewController(mod: mod)
+                }
+                top?.present(UINavigationController(rootViewController: screen), animated: false); return ["ok": true]
+            }
+            return ["ok": false, "error": "open mods|modkeys <mod>|modbutton <keys> <mod>|modchooser <key> <mod>|close"]
+        case "modbutton":
+            // modbutton <keys> <always|vehicle|model> <symbol|-> <mod>: what the button editor saves ("model": the vehicle the
+            // player is in now); modbutton clear: none.
+            if arguments.first == "clear" { ModButton.all = []; return ["ok": true] }
+            guard arguments.count >= 4, let show = ModButton.Show(rawValue: arguments[1]) else { return ["ok": false, "error": "modbutton <keys> <always|vehicle|model> <symbol|-> <mod>|clear"] }
+            let keys = arguments[0].split(separator: "+").compactMap { Int($0) }
+            var button = ModButton(mod: arguments.dropFirst(3).joined(separator: " "), keys: keys, symbol: arguments[2] == "-" ? "" : arguments[2], label: ModKeys.name(keys), show: show)
+            if show == .model { button.model = PGReadControlHints(PGCurrentTouchContext()).vehicleModel; button.modelName = String(button.model, radix: 16) }
+            ModButton.save(button)
+            return ["ok": true, "id": button.id, "model": button.model]
+        case "scheme":
+            // scheme situational|controller: Settings › Touch scheme (GTA-195).
+            guard let scheme = arguments.first.flatMap(GameSettings.TouchScheme.init) else { return ["ok": false, "error": "scheme situational|controller"] }
+            GameSettings.shared.touchScheme = scheme
+            return ["ok": true, "scheme": scheme.rawValue]
+        case "editor":
+            var top: UIViewController? = controller
+            while let next = top?.presentedViewController { top = next }
+            guard let editor = top as? ControlsLayoutEditorController else { return ["ok": false, "error": "no layout editor on screen (open layout)"] }
+            return editor.debugEdit(arguments)
+        case "teststop":
+            // teststop <line>|<line>|…: these engine lines, then a stop, as if the game had logged them (GTA-178).
+            for line in arguments.joined(separator: " ").components(separatedBy: "|") where !line.isEmpty { controller.appendLog(line) }
+            controller.appendLog("Native game thread stopped: Unreachable instruction executed (harness)")
+            return ["ok": true]
+        case "stopfix":
+            // stopfix: presses the stop panel's mod button (switch the mod off, or start without mods next time).
+            guard let title = controller.debugPressStopFix() else { return ["ok": false, "error": "no mod button on the stop panel"] }
+            return ["ok": true, "title": title, "pending": ModInstaller.pending, "withoutMods": ModGuard.withoutModsNextStart]
+        case "modkey":
+            // modkey <vk> <1|0>: presses or releases a Windows key for the script mods, as a keyboard does.
+            guard arguments.count == 2, let key = Int32(arguments[0]) else { return ["ok": false, "error": "modkey <vk> <1|0>"] }
+            PGAsiSetKey(key, arguments[1] == "1")
+            return ["ok": true]
+        case "spawn":
+            // spawn <model hash, hex>: Settings › Cheats' vehicle spawn, with the player put in it.
+            guard let model = arguments.first.flatMap({ UInt32($0.replacingOccurrences(of: "0x", with: ""), radix: 16) }) else { return ["ok": false, "error": "spawn <hex model>"] }
+            return ["ok": PGSpawnVehicle(model, true)]
+        case "modremap":
+            // modremap <modKey> <key|0> <mod>: the key that presses a mod's key (0: its own again).
+            guard arguments.count >= 3, let modKey = Int(arguments[0]), let key = Int(arguments[1]) else { return ["ok": false, "error": "modremap <modKey> <key|0> <mod>"] }
+            ModKeyRemap.set(mod: arguments.dropFirst(2).joined(separator: " "), modKey: modKey, key: key == 0 ? nil : key)
+            return ["ok": true, "remaps": ModKeyRemap.all.mapValues { $0.map { "\($0.key)->\($0.value)" } }]
         case "resize":
             // resize <width> <height>: the live back-buffer resize a resolution change in Settings or a TV makes (GTA-89).
             guard arguments.count == 2, let width = Int32(arguments[0]), let height = Int32(arguments[1]) else {

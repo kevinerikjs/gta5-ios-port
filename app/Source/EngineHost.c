@@ -229,6 +229,58 @@ void pg_buddy_defragment(w2c_game *instance,u64 allocator){
 }
 // Resident memory per engine pool region and in the rest of the engine heap, plus the D3D layer's
 // CPU copies of dynamic buffers (bytes, count, peak at 8324208/16/24).
+// The app's memory outside the engine block (GTA-174: what 4 GB iPhones could give back to the city). iOS counts an
+// app's dirty and compressed pages (its footprint); this walks the app's own memory regions and adds them up by
+// kind, as vmmap --summary does, without needing a debugger: malloc, Metal (IOAccelerator, IOSurface, IOKit),
+// stacks, Core Animation, audio, mapped files and so on. What the walk can't see, mostly the GPU's own memory,
+// is the footprint less the engine block and the regions; the renderer's texture count is shown next to it.
+static const char *pg_region_kind(unsigned tag){
+ if(tag>=1&&tag<=13)return "malloc";
+ switch(tag){
+  case 0:return "untagged";case 21:return "IOKit";case 30:return "stacks";case 33:case 60:case 61:return "dyld";
+  case 41:return "Foundation";case 42:case 52:case 54:case 55:case 56:case 57:case 58:return "CoreGraphics";
+  case 51:return "Core Animation";case 70:return "ImageIO";case 73:case 74:return "dispatch";
+  case 76:case 77:case 103:return "CoreUI";case 82:case 83:return "Swift";case 88:return "IOSurface";
+  case 90:return "audio";case 100:return "Metal (IOAccelerator)";default:return NULL;
+ }
+}
+uint64_t PGGPUTextureBytes(void),PGGPUBufferBytes(void),PGFrameRingBytes(void),PGConstantCopyBytes(void);
+static void pg_log_app_memory(void){
+ static char otherNames[40][16];
+ struct{const char *kind;uint64_t bytes;}kinds[40];int kindCount=0;
+ const uint64_t page=vm_page_size;
+ uint64_t engineLow=(uint64_t)(uintptr_t)env.memory.data,engineHigh=(uint64_t)(uintptr_t)env.memory.data_end+(64ull<<20);
+ uint64_t outside=0,engine=0;
+ vm_address_t address=0;natural_t depth=0;
+ for(;;){
+  vm_size_t size=0;vm_region_submap_info_data_64_t info;mach_msg_type_number_t count=VM_REGION_SUBMAP_INFO_COUNT_64;
+  if(vm_region_recurse_64(mach_task_self(),&address,&size,&depth,(vm_region_recurse_info_t)&info,&count)!=KERN_SUCCESS)break;
+  if(info.is_submap){depth++;continue;}
+  uint64_t bytes=((uint64_t)info.pages_dirtied+info.pages_swapped_out)*page;
+  if(address>=engineLow&&address<engineHigh)engine+=bytes;
+  else if(bytes){
+   outside+=bytes;
+   const char *kind=pg_region_kind(info.user_tag);
+   int k=0;
+   if(kind)while(k<kindCount&&strcmp(kinds[k].kind,kind))k++;
+   else{char other[16];snprintf(other,sizeof other,"tag %u",info.user_tag);while(k<kindCount&&strcmp(kinds[k].kind,other))k++;
+    if(k==kindCount&&kindCount<40){snprintf(otherNames[kindCount],sizeof otherNames[0],"%s",other);kind=otherNames[kindCount];}}
+   if(k==kindCount&&kindCount<40&&kind){kinds[kindCount].kind=kind;kinds[kindCount].bytes=0;kindCount++;}
+   if(k<kindCount)kinds[k].bytes+=bytes;
+  }
+  address+=size;
+ }
+ task_vm_info_data_t vm;mach_msg_type_number_t vmCount=TASK_VM_INFO_COUNT;uint64_t footprint=0;
+ if(task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&vm,&vmCount)==KERN_SUCCESS)footprint=vm.phys_footprint;
+ for(int a=0;a<kindCount;a++)for(int b=a+1;b<kindCount;b++)if(kinds[b].bytes>kinds[a].bytes){__typeof__(kinds[0]) t=kinds[a];kinds[a]=kinds[b];kinds[b]=t;}
+ char line[1100];int at=snprintf(line,sizeof line,"App memory (footprint %lluMB): engine block %lluMB, outside it %lluMB:",
+  (unsigned long long)(footprint>>20),(unsigned long long)(engine>>20),(unsigned long long)(outside>>20));
+ for(int k=0;k<kindCount&&at<(int)sizeof line-48;k++)if(kinds[k].bytes>=(1ull<<20))at+=snprintf(line+at,sizeof line-at," %s %lluMB ·",kinds[k].kind,(unsigned long long)(kinds[k].bytes>>20));
+ uint64_t seen=engine+outside;
+ if(at<(int)sizeof line-200)snprintf(line+at,sizeof line-at," not in a region (GPU's own) %lluMB; Metal textures %lluMB, buffers %lluMB, frame rings %lluMB; constant buffer copies (malloc) %lluMB",
+  (unsigned long long)((footprint>seen?footprint-seen:0)>>20),(unsigned long long)(PGGPUTextureBytes()>>20),(unsigned long long)(PGGPUBufferBytes()>>20),(unsigned long long)(PGFrameRingBytes()>>20),(unsigned long long)(PGConstantCopyBytes()>>20));
+ pg_log(line);
+}
 void PGLogMemoryPools(void){
  uint8_t *data=env.memory.data;uint64_t size=env.memory.size;
  if(!data||!size)return;
@@ -253,10 +305,10 @@ void PGLogMemoryPools(void){
  if(8324232<=size){memcpy(&cpuCopies,data+8324208,8);memcpy(&copies,data+8324216,8);memcpy(&peak,data+8324224,8);}
  if(at<(int)sizeof line-160)snprintf(line+at,sizeof line-at," | pools %lluMB, rest %lluMB, all %lluMB | D3D CPU copies %lluMB (%llu, peak %lluMB) | returned to iOS %lluMB in %llu frees",(unsigned long long)(inRegions>>20),(unsigned long long)((total>inRegions?total-inRegions:0)>>20),(unsigned long long)(total>>20),(unsigned long long)(cpuCopies>>20),(unsigned long long)copies,(unsigned long long)(peak>>20),(unsigned long long)(atomic_load(&heapReturnedBytes)>>20),(unsigned long long)atomic_load(&heapReturnedBlocks));
  pg_log(line);
+ pg_log_app_memory();
 }
 uint64_t PGMemoryBudgetEvictions(void){return atomic_load(&memoryBudgetEvictions);}
 static uint64_t simulatedProcessLimit;
-uint64_t PGGPUTextureBytes(void);
 static uint64_t processLimitMB; // the app's memory limit at boot, or the player's cap (0 in the simulator)
 // Settings › Memory cap (0 automatic): the game behaves as if iOS allowed only this much.
 static uint64_t memoryCapMB, capReserveBytes;
@@ -701,6 +753,41 @@ static bool pg_can_detonate(const uint8_t *m,uint64_t size,uint64_t ped){
 }
 // Set on the game thread by pg_trailer_tick (below), read with the other hints.
 static _Atomic bool pg_trailer_attached;
+static uint64_t pg_script_global(uint64_t index);
+// Context prompts (GTA-104). Scripts don't read the context input for "Press ~INPUT_CONTEXT~ to ..." themselves: they
+// register the prompt with the context_controller script, which shows its help and marks it pressed. The prompts are
+// script globals of the pinned build (Global_51249: 6 entries of 48 words from 51250; word 0 set while registered,
+// word 7 while being removed, words 8-9 the help label), found in the simulator at the car garage's exit. A label that
+// isn't in the game files has no help text (GTA-99), so nothing asked for the input and touch had no button: leaving
+// the safehouse car garage on foot (WEB_VEH_EXIT, 17 player logs) was impossible. A registered prompt asks by itself.
+static bool pg_context_prompt_waiting(const uint8_t *m,uint64_t size){
+ enum{LIST=51249,ENTRIES=6,WORDS=48};
+ const uint64_t list=pg_script_global(LIST);uint64_t count;
+ if(!list||!pg_context_u64(m,size,list,&count)||count!=ENTRIES)return false;   // another layout: ask nothing
+ for(int i=0;i<ENTRIES;i++){
+  const uint64_t entry=pg_script_global(LIST+1+(uint64_t)WORDS*i);uint64_t registered,removing;
+  if(entry&&pg_context_u64(m,size,entry,&registered)&&registered==1&&pg_context_u64(m,size,entry+8*7,&removing)&&!removing)return true;
+ }
+ return false;
+}
+// A help message names a button token, in any case: Monkey Business's dive is "Press ~input_veh_exit~ to dive into the
+// sea." (GTA-189), and the Chinese selfie help names ~input_script_rt~ (player logs). Help texts are UTF-8; only ASCII
+// letters fold.
+static bool pg_help_names(const char *text,size_t length,const char *token){
+ const size_t n=strlen(token);
+ for(size_t i=0;n&&i+n<=length;i++){
+  size_t j=0;
+  while(j<n){
+   unsigned char a=(unsigned char)text[i+j],b=(unsigned char)token[j];
+   if(a>='a'&&a<='z')a-=32;
+   if(b>='a'&&b<='z')b-=32;
+   if(a!=b)break;
+   j++;
+  }
+  if(j==n)return true;
+ }
+ return false;
+}
 PGControlHints PGReadControlHints(uint32_t touchContext){
  PGControlHints hints={0};
  if(!atomic_load(&inputBlock))return hints;
@@ -746,6 +833,7 @@ PGControlHints PGReadControlHints(uint32_t touchContext){
   }
  }
  hints.canDetonate=pg_can_detonate(m,size,ped);
+ hints.contextPrompt=pg_context_prompt_waiting(m,size);
  hints.trailerAttached=atomic_load(&pg_trailer_attached);
  hints.selfRadioPlaying=PGSelfRadioAudible();
  uint64_t pedInfo;
@@ -758,10 +846,13 @@ PGControlHints PGReadControlHints(uint32_t touchContext){
   // D-pad right: also the script's own pad input, as in "Press ~INPUT_SCRIPT_PAD_RIGHT~ to pick up a container" (the
   // docks crane; 3 player logs had no button for it, report 953).
   static const char *const tokens[]={"INPUT_CONTEXT","INPUT_TALK","~INPUT_SCRIPT_PAD_RIGHT~"};
-  for(int t=0;t<3&&!hints.helpContext;t++)if(memmem(text,1800,tokens[t],strlen(tokens[t])))hints.helpContext=true;
+  for(int t=0;t<3&&!hints.helpContext;t++)if(pg_help_names(text,1800,tokens[t]))hints.helpContext=true;
   // "Detonate the explosives using ~INPUT_DETONATE~": missions that plant the explosives themselves, so the player
   // has no sticky bombs of their own and canDetonate stays off (log 563, report 946).
-  if(memmem(text,1800,"~INPUT_DETONATE~",16))hints.helpDetonate=true;
+  if(pg_help_names(text,1800,"~INPUT_DETONATE~"))hints.helpDetonate=true;
+  // Y on a controller: "Press ~input_veh_exit~ to dive into the sea." with player control off, where the touch prompt
+  // layout has no Enter/Exit button (Monkey Business, GTA-189).
+  if(pg_help_names(text,1800,"~INPUT_VEH_EXIT~")||pg_help_names(text,1800,"~INPUT_ENTER~"))hints.helpExit=true;
   // The script inputs the help names (GTA-94): "Hold ~INPUT_SCRIPT_RT~ to grip a tooth" asks for RT however the
   // script then reads it, which the poll check doesn't always see; the right stick by its group or either axis.
   // By the Book's next step, "Rotate ~PAD_RSTICK_ROTATE~ to pull it out.", names only the rotation, but RT has to stay
@@ -777,7 +868,7 @@ PGControlHints PGReadControlHints(uint32_t touchContext){
     {"~INPUT_SCRIPT_LS~",230},{"~INPUT_SCRIPT_RS~",231},{"~PAD_RSTICK_ROTATE~",220},{"~PAD_RSTICK_ROTATE~",229},
     {"~INPUTGROUP_SCRIPT_DPAD_ALL~",232},{"~INPUT_SCRIPT_PAD_UP~",232},{"~INPUT_SCRIPT_PAD_DOWN~",233},{"~INPUT_SCRIPT_PAD_LEFT~",234}};
   const size_t length=strnlen(text,1800);
-  for(size_t t=0;t<sizeof named/sizeof named[0];t++)if(memmem(text,length,named[t].token,strlen(named[t].token)))hints.helpInputs|=1u<<(named[t].input-218);
+  for(size_t t=0;t<sizeof named/sizeof named[0];t++)if(pg_help_names(text,length,named[t].token))hints.helpInputs|=1u<<(named[t].input-218);
   // Logged once per new message, so the prompts' button tokens can be checked in logs.
   static char last[320];char now[320];size_t n=strnlen(text,319);memcpy(now,text,n);now[n]=0;
   if(strcmp(now,last)){memcpy(last,now,sizeof last);char line[360];snprintf(line,sizeof line,"Help message: %s",now);pg_log(line);}
@@ -1279,6 +1370,84 @@ void pg_missing_text(u64 buffer) {
 #endif
   if (buffer) *(char *)pg_pointer(&env, buffer, 1) = 0;
 }
+// GTA-190 (Scripts/prepare_help_label_check.py): a help label whose text is empty (not in the game files, see
+// pg_missing_text) is never the help being displayed; comparing "" with an empty help box said it was, whenever no help
+// was up. The simulator test PG_TEST_HELP_LABEL_OLD=1 keeps the old answer for comparison.
+u32 pg_help_label_empty(u64 buffer) {
+#if TARGET_OS_SIMULATOR
+  if (getenv("PG_TEST_HELP_LABEL_OLD")) return 0;
+#endif
+  return buffer && !*(const char *)pg_pointer(&env, buffer, 1);
+}
+// GTA-193 (Scripts/prepare_clip_offsets.py): the coin-op telescopes' clips (mini@telescope PUBLIC_ENTER_FRONT,
+// PUBLIC_IDLE, PUBLIC_EXIT_FRONT) carry a start (InitialOffset) a quarter turn counter-clockwise from the spot
+// ob_telescope was written for: the player ended beside the telescope, 1.2 m from the spot it checks, and it gave
+// control back without the view. Called on entry to both fwAnimHelpers::ApplyInitialOffsetFromClip versions, the
+// only readers of a clip's start. A clip with one of those names and exactly those values gets its start turned a
+// quarter turn clockwise about the scene origin, in place and once (then it no longer matches). A clip's property
+// map is at +64 (buckets at +0, count at +8; entry: key +0, property +8, next +16), a property's attributes at +32
+// (count at +40), an attribute's type at +8 (6 vector, 8 quaternion), key at +24, value at +32. The simulator test
+// PG_TEST_CLIP_OFFSET_OLD=1 keeps the old clips for comparison.
+static u64 pg_clip_attribute(u64 clip, uint32_t key, uint32_t type) {
+  u64 map, buckets, entry = 0, property = 0, attributes; uint16_t count; uint32_t k;
+  memcpy(&map, pg_pointer(&env, clip + 64, 8), 8);
+  if (!map) return 0;
+  memcpy(&buckets, pg_pointer(&env, map, 8), 8); memcpy(&count, pg_pointer(&env, map + 8, 2), 2);
+  if (!buckets || !count) return 0;
+  memcpy(&entry, pg_pointer(&env, buckets + 8 * (key % count), 8), 8);
+  for (; entry; memcpy(&entry, pg_pointer(&env, entry + 16, 8), 8)) {
+    memcpy(&k, pg_pointer(&env, entry, 4), 4);
+    if (k == key) { memcpy(&property, pg_pointer(&env, entry + 8, 8), 8); break; }
+  }
+  if (!property) return 0;
+  memcpy(&attributes, pg_pointer(&env, property + 32, 8), 8); memcpy(&count, pg_pointer(&env, property + 40, 2), 2);
+  for (uint16_t i = 0; attributes && i < count; i++) {
+    u64 attribute; uint32_t t;
+    memcpy(&attribute, pg_pointer(&env, attributes + 8 * i, 8), 8);
+    if (!attribute) continue;
+    memcpy(&k, pg_pointer(&env, attribute + 24, 4), 4); memcpy(&t, pg_pointer(&env, attribute + 8, 4), 4);
+    if (k == key) return t == type ? attribute + 32 : 0;
+  }
+  return 0;
+}
+void pg_clip_offset_fix(w2c_game *instance, u64 clip) {
+  static const struct { const char *name; float x, y; } telescope[] = {
+    {"pack:/public_enter_front.clip", -0.95832604f, -0.09476573f},
+    {"pack:/public_idle.clip", -0.73961860f, 0.20250848f},
+    {"pack:/public_exit_front.clip", -0.75705075f, 0.23435752f},
+  };
+  (void)instance;
+  if (!clip) return;
+  uint16_t length; u64 name;
+  memcpy(&length, pg_pointer(&env, clip + 0x20, 2), 2);
+  if (length < 22 || length > 29) return;   // the cheap test first: most clips stop here
+  memcpy(&name, pg_pointer(&env, clip + 0x18, 8), 8);
+  if (!name) return;
+  const char *text = pg_pointer(&env, name, length);
+  int which = -1;
+  for (int i = 0; i < 3; i++) if (strlen(telescope[i].name) == length && !memcmp(text, telescope[i].name, length)) which = i;
+  if (which < 0) return;
+#if TARGET_OS_SIMULATOR
+  if (getenv("PG_TEST_CLIP_OFFSET_OLD")) return;
+#endif
+  u64 at = pg_clip_attribute(clip, *(const uint32_t *)pg_pointer(&env, 10860784, 4), 6);    // InitialOffsetTranslation
+  u64 ar = pg_clip_attribute(clip, *(const uint32_t *)pg_pointer(&env, 10860788, 4), 8);    // InitialOffsetRotation
+  if (!at || !ar) return;
+  float t[3], q[4];
+  memcpy(t, pg_pointer(&env, at, 12), 12); memcpy(q, pg_pointer(&env, ar, 16), 16);
+  const float s = 0.70710678f;
+  if (fabsf(t[0] - telescope[which].x) > 1e-4f || fabsf(t[1] - telescope[which].y) > 1e-4f ||
+      fabsf(q[0]) > 1e-4f || fabsf(q[1]) > 1e-4f || fabsf(q[2] + s) > 1e-4f || fabsf(q[3] - s) > 1e-4f) return;
+  // A quarter turn clockwise about z: (x, y) -> (y, -x); the rotation becomes (0, 0, -s, s) * q.
+  const float turned[2] = {t[1], -t[0]};
+  const float r[4] = {s * q[0] + s * q[1], s * q[1] - s * q[0], s * q[2] - s * q[3], s * q[3] + s * q[2]};
+  memcpy(pg_pointer(&env, at, 8), turned, 8);
+  memcpy(pg_pointer(&env, ar, 16), r, 16);
+  char line[160];
+  snprintf(line, sizeof line, "GTA-193: %s start turned to (%.3f, %.3f), facing 180 (telescope clip)", telescope[which].name + 6,
+           turned[0], turned[1]);
+  pg_log(line);
+}
 // GTA-96 (Scripts/prepare_menu_shadow.py): in the pause menu's "graphics changed" check, a shadow quality below the
 // menu's lowest choice (Normal, 1) counts as that choice. The check's frame holds the settings in use at +576 and
 // the menu's at +128, shadow quality at +16 in each; only the frame's copy changes.
@@ -1286,6 +1455,56 @@ void pg_menu_shadow_floor(w2c_game *instance, u64 frame) {
   (void)instance;
   int32_t *used = pg_pointer(&env, frame + 576 + 16, 4);
   if (*used < 1 && *(int32_t *)pg_pointer(&env, frame + 128 + 16, 4) == 1) *used = 1;
+}
+// "Restart now?" in the pause menu's graphics settings (GTA-166, Scripts/prepare_settings_restart.py). The port
+// can't restart the game (the browser build reloaded its page), and "Yes" froze it. Now "Yes" keeps the choices the
+// app sets at launch for the next start: this line goes to the app (App/NativePortViewController.swift), which
+// keeps them in Settings › Graphics. The game's own settings.xml is reset before each start, since some of its
+// choices stopped the game from starting. Returns 1 to set the engine's restart flag as before: when the save
+// failed (restart 0), or with PG_TEST_SETTINGS_RESTART_OLD=1 in the simulator. Settings (the ones in use at
+// 19446824, CSettingsManager's; the chosen ones from GetMenuGraphicsSettings) hold the graphics from +16 (parser
+// offsets +16): texture quality +76, particles +80, grass +88, shaders +92, shadows +40, reflections +44, draw
+// distance +28, LOD bias +32/+36, population density and variety +132/+136/+140 (CSettingsMenu::ApplyGfxSettings
+// compares +76, +80, +88 and +92 to ask for the restart). An atString's text is at +280.
+void PG_FN_MENU_GRAPHICS_SETTINGS(w2c_game*, u64, u32); // CPauseMenu::GetMenuGraphicsSettings
+void PG_FN_OPERATOR_DELETE(w2c_game *, u64);
+u32 pg_settings_restart(w2c_game *instance, u64 menu, u32 restart) {
+  (void)menu;
+  if (!restart) return 1;
+#if TARGET_OS_SIMULATOR
+  if (getenv("PG_TEST_SETTINGS_RESTART_OLD")) return 1;
+#endif
+  static const struct { const char *option; uint32_t at; char kind; } fields[] = {
+    {"textureQuality", 76, 'i'}, {"shaderQuality", 92, 'i'}, {"particleQuality", 80, 'i'}, {"grassQuality", 88, 'i'},
+    {"shadowQuality", 40, 's'}, {"reflectionQuality", 44, 'i'}, {"lodScale", 28, 'f'}, {"pedLodBias", 32, 'f'},
+    {"vehicleLodBias", 36, 'f'}, {"cityDensity", 132, 'f'}, {"pedVariety", 136, 'f'}, {"vehicleVariety", 140, 'f'}};
+  const u64 chosen = PG_FN_OPERATOR_NEW(instance, 1024);
+  memset(pg_pointer(&env, chosen, 1024), 0, 1024);
+  PG_FN_MENU_GRAPHICS_SETTINGS(instance, chosen, 1);
+  const uint8_t *now = pg_pointer(&env, 19446824, 296), *want = pg_pointer(&env, chosen, 296);
+  char line[512]; int at = snprintf(line, sizeof line, "Pause menu graphics for the next start (GTA-166):");
+  for (size_t i = 0; i < sizeof fields / sizeof fields[0] && at < (int)sizeof line - 48; i++) {
+    int32_t a, b; float x, y;
+    memcpy(&a, now + fields[i].at, 4); memcpy(&b, want + fields[i].at, 4); memcpy(&x, &a, 4); memcpy(&y, &b, 4);
+    if (fields[i].kind == 'f') {
+      if (!(fabsf(x - y) >= 0.005f)) continue;
+      at += snprintf(line + at, sizeof line - at, " %s=%g", fields[i].option, roundf(y * 100) / 100);
+    } else if (fields[i].kind == 's') {
+      // -shadowQuality is the setting minus 1 (-1 off); the menu's lowest choice, Normal (1), stands for the app's
+      // Low and Off too (GTA-96), so it is a change only from a higher setting.
+      if (a == b || (b == 1 && a < 1)) continue;
+      at += snprintf(line + at, sizeof line - at, " %s=%d", fields[i].option, b - 1);
+    } else {
+      if (a == b) continue;
+      if (!strcmp(fields[i].option, "shaderQuality") && b < 1) b = 1;  // the low shader set is mostly missing
+      at += snprintf(line + at, sizeof line - at, " %s=%d", fields[i].option, b);
+    }
+  }
+  u64 text; memcpy(&text, want + 280, 8);
+  if (text) PG_FN_OPERATOR_DELETE(instance, text);
+  PG_FN_OPERATOR_DELETE(instance, chosen);
+  pg_log(line);
+  return 0;
 }
 // GTA-72 (Scripts/prepare_bink_queue.py): video commands are dropped, since no AsyncBink thread reads their
 // queue; 1 keeps them (the old behaviour, PG_TEST_BINK_QUEUE_OLD in the simulator).
@@ -1964,6 +2183,9 @@ void PGAsiSetKey(int virtualKey, bool down) {
   atomic_store(&pg_asi_key_events[at % 64], (uint32_t)virtualKey | (down ? 0x100u : 0));
 }
 bool PGAsiModKeys(uint8_t keys[256]) { return pg_asi_polled_keys(keys); }
+bool PGAsiModuleKeys(const char *module, uint8_t keys[256], bool *keyboardHandler) { return pg_asi_module_keys(module, keys, keyboardHandler); }
+void PGAsiSetKeyRemap(const char *module, int modKey, int key) { pg_asi_set_key_remap(module, modKey, key); }
+void PGAsiClearKeyRemaps(void) { pg_asi_clear_key_remaps(); }
 void PGAsiGetKeyInfo(PGAsiKeyInfo *info) { pg_asi_key_info(info); }
 static bool pg_asi_key_down(int virtualKey) { return virtualKey > 0 && virtualKey < 256 && atomic_load(&pg_asi_keys[virtualKey]); }
 #if TARGET_OS_SIMULATOR
@@ -2489,14 +2711,14 @@ static void pg_trackify_tick(w2c_game *instance) {
   }
   pg_asi_leave_script(instance, previous);
 }
-#if TARGET_OS_SIMULATOR
+#if TARGET_OS_SIMULATOR || TARGET_OS_MACCATALYST
 // Harness: the debug channel's "audiodump <path> <seconds>" saves the next seconds of the game's sound (48 kHz,
 // stereo float32, interleaved), so a test can check what played (Self Radio, GTA-5).
 static FILE *pg_audio_dump; static _Atomic int64_t pg_audio_dump_frames;
 #include "NativeDebugChannel.inc"
 #endif
 void pg_asi_script_tick(w2c_game *instance, u64 thread) {
-#if TARGET_OS_SIMULATOR
+#if TARGET_OS_SIMULATOR || TARGET_OS_MACCATALYST
   if (thread && strcmp(pg_string(&env, thread + 428), "main")) pg_debug_tick(instance, false);
 #endif
   if (!thread || strcmp(pg_string(&env, thread + 428), "main")) return;
@@ -2505,8 +2727,10 @@ void pg_asi_script_tick(w2c_game *instance, u64 thread) {
   pg_submarine_depth_tick(instance);
   pg_cheats_menu_tick(instance);
   pg_trackify_tick(instance);
-#if TARGET_OS_SIMULATOR
+#if TARGET_OS_SIMULATOR || TARGET_OS_MACCATALYST
   pg_debug_tick(instance, true);
+#endif
+#if TARGET_OS_SIMULATOR
   pg_test_spawn();
   pg_test_cheat(instance);
   pg_test_text(instance);
@@ -2915,6 +3139,22 @@ void pg_script_fault(w2c_game *instance) {
   char line[160]; snprintf(line, sizeof line, "Script fault %d: that script was stopped and the game goes on (a BankRelease build would stop the game here).", n);
   pg_log(line);
 }
+// A late occlusion answer (Scripts/prepare_occlusion_late.py, GTA-176): GetData said "not yet" (hr != 0). The caller's
+// variable keeps the last answer unless PG_OQ_ZERO_LATE=1 (the game's own 0, for A/B). Counted for the renderer's log.
+static _Atomic uint64_t pgOcclusionLate, pgOcclusionReads;
+uint64_t PGOcclusionLate(void) { return atomic_load(&pgOcclusionLate); }
+uint64_t PGOcclusionReads(void) { return atomic_load(&pgOcclusionReads); }
+// Returns 0: the caller stores what GetData gave (an answer, or the game's own 0 with PG_OQ_ZERO_LATE=1); 1: the
+// caller keeps the last answer and is told "not yet"; 2 (PG_OQ_LATE_READY=1): it keeps the last answer as ready.
+u32 pg_occlusion_late(u32 hr) {
+  static int zero = -1, ready = -1;
+  if (zero < 0) { const char *v = getenv("PG_OQ_ZERO_LATE"); zero = v && atoi(v); }
+  if (ready < 0) { const char *v = getenv("PG_OQ_LATE_READY"); ready = v && atoi(v); }
+  atomic_fetch_add_explicit(&pgOcclusionReads, 1, memory_order_relaxed);
+  if (!hr) return 0;
+  atomic_fetch_add_explicit(&pgOcclusionLate, 1, memory_order_relaxed);
+  return zero ? 0 : ready ? 2 : 1;
+}
 // The frame limiter's last stretch (Scripts/prepare_frame_limit_sleep.py, GTA-169): it used to spin reading the
 // clock for the 1-2 ms its whole-millisecond sleeps couldn't cover; a precise sleep takes that time instead.
 void pg_frame_limit_sleep(float seconds) {
@@ -3217,6 +3457,260 @@ u32 pg_texture_view_bad(w2c_game *instance, u64 texture) {
   }
   return bad;
 }
+// Constant buffers freed by a device restore while a D3D context still holds them (Scripts/prepare_stale_cbuffers.py,
+// GTA-198: "Native trap 6" in __dynamic_cast from NullContext::SetCBuffers, 16 player logs after a live resize).
+// The fix is pg_cbuffer_freed below. This is the guard behind it: SetCBuffers asks before it casts a buffer whose
+// vtable its cache doesn't know. One that isn't the D3D buffer's vtable is freed memory, and the cast would call
+// through garbage; it binds nothing in that slot instead. Logged the first 4 times, then at 10, 100, 1000...
+const char *pg_app_symbol(uintptr_t pc);
+static _Atomic uint64_t cbufferDeadBinds;
+static void pg_cbuffer_describe(uint64_t buffer, char *out, size_t size);
+u32 pg_cbuffer_dead(w2c_game *instance, u64 buffer, u64 vtable, u64 expected, u32 stage, u32 slot) {
+  (void)instance;
+  if (__builtin_expect(vtable == expected, 1)) return 0;
+#if TARGET_OS_SIMULATOR
+  static int off = -1;   // PG_TEST_CBUF_NOGUARD=1: cast it anyway, as before the fix (the simulator's A/B test)
+  if (off < 0) { const char *v = getenv("PG_TEST_CBUF_NOGUARD"); off = v && atoi(v) == 1; }
+  if (off) return 0;
+#endif
+  uint64_t n = atomic_fetch_add(&cbufferDeadBinds, 1) + 1;
+  if (n <= 4 || n == 10 || n == 100 || n == 1000 || n == 10000 || n == 100000) {
+    static const char *const stages[] = {"vertex", "pixel", "compute"};
+    char freed[200] = "", line[360];
+    pg_cbuffer_describe(buffer, freed, sizeof freed);
+    snprintf(line, sizeof line, "Constant buffer slot %u (%s shader) held a freed buffer (0x%llx, vtable 0x%llx); bound nothing there (GTA-198, %llu times).%s",
+             slot, stage < 3 ? stages[stage] : "other", (unsigned long long)buffer, (unsigned long long)vtable, (unsigned long long)n, freed);
+    pg_log(line);
+  }
+  return 1;
+}
+// PG_CBUF_TRACE=1: the host keeps the constant buffers the engine frees (bind flag 4 at +104 of the 144-byte buffer
+// object), with who freed them (the native frames), until CreateBuffer makes a new buffer at the same address. Every
+// bind of a kept one is logged, also when its memory still looks like a buffer and nothing would trap.
+int pg_cbuffer_tracing = -1;   // -1 until the first call reads PG_CBUF_TRACE (the app may set it before the engine starts)
+#define PG_CBUF_SLOTS 65536
+#define PG_CBUF_FRAMES 14
+typedef struct { uint64_t buffer; double freed; uint32_t size, binds; uintptr_t frames[PG_CBUF_FRAMES]; } PGFreedCBuffer;
+static PGFreedCBuffer *cbufferFreed; static uint32_t cbufferFreedCount; static uint64_t cbufferFreedTotal, cbufferStaleBinds;
+static pthread_mutex_t cbufferLock = PTHREAD_MUTEX_INITIALIZER;
+static void pg_cbuffer_trace_init(void) {
+  const char *v = getenv("PG_CBUF_TRACE");
+  int on = v && atoi(v) == 1;
+  if (on) { cbufferFreed = calloc(PG_CBUF_SLOTS, sizeof *cbufferFreed); on = cbufferFreed != NULL; }
+  pg_cbuffer_tracing = on;   // the first freed buffer's line says the trace is on
+}
+static pthread_once_t cbufferOnce = PTHREAD_ONCE_INIT;
+static inline int pg_cbuffer_on(void) { if (pg_cbuffer_tracing < 0) pthread_once(&cbufferOnce, pg_cbuffer_trace_init); return pg_cbuffer_tracing == 1; }
+static inline uint32_t pg_cbuffer_hash(uint64_t buffer) { return (uint32_t)((buffer >> 4) * 2654435761u) & (PG_CBUF_SLOTS - 1); }
+static PGFreedCBuffer *pg_cbuffer_find(uint64_t buffer) {   // under cbufferLock
+  for (uint32_t i = pg_cbuffer_hash(buffer), n = 0; n < PG_CBUF_SLOTS; i = (i + 1) & (PG_CBUF_SLOTS - 1), n++) {
+    if (cbufferFreed[i].buffer == buffer) return &cbufferFreed[i];
+    if (!cbufferFreed[i].buffer) return NULL;
+  }
+  return NULL;
+}
+static void pg_cbuffer_remove(PGFreedCBuffer *entry) {   // under cbufferLock; linear probing, backward shift
+  uint32_t hole = (uint32_t)(entry - cbufferFreed);
+  for (uint32_t i = (hole + 1) & (PG_CBUF_SLOTS - 1); cbufferFreed[i].buffer; i = (i + 1) & (PG_CBUF_SLOTS - 1)) {
+    uint32_t home = pg_cbuffer_hash(cbufferFreed[i].buffer);
+    if (((i - home) & (PG_CBUF_SLOTS - 1)) >= ((i - hole) & (PG_CBUF_SLOTS - 1))) { cbufferFreed[hole] = cbufferFreed[i]; hole = i; }
+  }
+  memset(&cbufferFreed[hole], 0, sizeof *cbufferFreed); cbufferFreedCount--;
+}
+// The cause (Scripts/prepare_stale_cbuffers.py): RageDirect3DDeviceContext11 keeps the constant buffers bound per
+// stage, six arrays of 14 pointers from +1656 (vertex, pixel, compute, domain, hull, geometry), and forwards a whole
+// changed range to the null context, unchanged slots in between too. The decal batcher binds the decal manager's own
+// constant buffer to vertex slot 6, and a device restore (decalManager::DeviceResetCallback) destroys it and makes a
+// new one while slot 6 still holds the old one. So each constant buffer that is destroyed leaves every such context
+// first, as the wrapper's own *ClearConstantBuffers would clear it. Contexts are learned from its VSSetConstantBuffers.
+#define PG_CBUF_CONTEXTS 8
+u64 pg_cbuffer_seen_context;
+static _Atomic uint64_t cbufferContexts[PG_CBUF_CONTEXTS];
+static _Atomic uint64_t cbufferSlotsCleared;
+void pg_cbuffer_context(u64 context) {
+  pg_cbuffer_seen_context = context;
+  if (!context || context + 2328 > env.memory.size) return;
+  for (int i = 0; i < PG_CBUF_CONTEXTS; i++) {
+    uint64_t known = atomic_load_explicit(&cbufferContexts[i], memory_order_relaxed);
+    if (known == context) return;
+    if (!known) {
+      uint64_t empty = 0;
+      if (atomic_compare_exchange_strong(&cbufferContexts[i], &empty, context)) return;
+      if (empty == context) return;
+    }
+  }
+}
+static void pg_cbuffer_leave_contexts(uint64_t buffer) {
+#if TARGET_OS_SIMULATOR
+  static int keepSlots = -1;   // PG_TEST_CBUF_NOCLEAR=1: as before the fix, for the simulator's A/B test
+  if (keepSlots < 0) { const char *v = getenv("PG_TEST_CBUF_NOCLEAR"); keepSlots = v && atoi(v) == 1; }
+  if (keepSlots) return;
+#endif
+  static const char *const stages[] = {"vertex", "pixel", "compute", "domain", "hull", "geometry"};
+  for (int c = 0; c < PG_CBUF_CONTEXTS; c++) {
+    uint64_t context = atomic_load_explicit(&cbufferContexts[c], memory_order_relaxed);
+    if (!context) break;
+    if (context + 2328 > env.memory.size) continue;
+    _Atomic uint64_t *slot = (_Atomic uint64_t *)(env.memory.data + context + 1656);
+    for (int i = 0; i < 6 * 14; i++) {
+      uint64_t held = buffer;
+      if (atomic_load_explicit(&slot[i], memory_order_relaxed) != buffer || !atomic_compare_exchange_strong(&slot[i], &held, 0)) continue;
+      uint64_t n = atomic_fetch_add(&cbufferSlotsCleared, 1) + 1;
+      if (n <= 4 || n == 10 || n == 100 || n == 1000 || n == 10000) {
+        char line[220]; snprintf(line, sizeof line, "Constant buffer slot %d (%s shader) still held a buffer being freed (0x%llx); cleared it (GTA-198, %llu times).",
+                                 i % 14, stages[i / 14], (unsigned long long)buffer, (unsigned long long)n);
+        pg_log(line);
+      }
+    }
+  }
+}
+// PG_TEST_CBUF_KEEP=1 (simulator only): the deleting destructor keeps a freed constant buffer's 144 bytes instead of
+// freeing them, and fills them as freed memory reads on a phone: zeros, with the first word pointing at zeros. A
+// context slot still holding it then stops the game as in the players' logs (trap 6 in __dynamic_cast, table index 0).
+u32 pg_cbuffer_keep(w2c_game *instance, u64 buffer) {
+  (void)instance;
+#if TARGET_OS_SIMULATOR
+  static int keep = -1;
+  if (keep < 0) { const char *v = getenv("PG_TEST_CBUF_KEEP"); keep = v && atoi(v) == 1; }
+  if (!keep || !buffer || buffer + 144 > env.memory.size) return 0;
+  uint32_t bind; memcpy(&bind, env.memory.data + buffer + 104, 4);
+  if (!(bind & 4)) return 0;
+  memset(env.memory.data + buffer, 0, 144);
+  uint64_t zeros = buffer + 32; memcpy(env.memory.data + buffer, &zeros, 8);
+  static _Atomic int told;
+  if (!atomic_exchange(&told, 1)) pg_log("PG_TEST_CBUF_KEEP=1: freed constant buffers keep their memory, filled as freed memory (GTA-198 test).");
+  return 1;
+#else
+  (void)buffer; return 0;
+#endif
+}
+void pg_cbuffer_freed(w2c_game *instance, u64 buffer) {
+  (void)instance;
+  if (!buffer || buffer + 144 > env.memory.size) return;
+  uint32_t bind; memcpy(&bind, env.memory.data + buffer + 104, 4);
+  if (!(bind & 4)) return;   // D3D11_BIND_CONSTANT_BUFFER
+  if (pg_cbuffer_on()) {   // the trace: every context's vertex slots as the buffer goes
+    for (int c = 0; c < PG_CBUF_CONTEXTS; c++) {
+      uint64_t context = atomic_load(&cbufferContexts[c]);
+      if (!context || context + 2328 > env.memory.size) break;
+      char line[400]; int used = snprintf(line, sizeof line, "Constant buffer trace: freeing 0x%llx; context 0x%llx vertex slots:", (unsigned long long)buffer, (unsigned long long)context);
+      for (int i = 0; i < 14 && used < (int)sizeof line; i++) { uint64_t v; memcpy(&v, env.memory.data + context + 1656 + 8 * i, 8); used += snprintf(line + used, sizeof line - used, " %llx", (unsigned long long)v); }
+      pg_log(line);
+    }
+  }
+#if TARGET_OS_SIMULATOR
+  // PG_TEST_CBUF_LAST=1: the decal manager's buffer (12288 bytes) sits in vertex slot 6 as it goes, as when the decal
+  // batch was the last draw to set slot 6 before the restore. In the simulator a later pass always sets it again.
+  static int last = -1;
+  if (last < 0) { const char *v = getenv("PG_TEST_CBUF_LAST"); last = v && atoi(v) == 1; }
+  uint32_t width = 0; memcpy(&width, env.memory.data + buffer + 96, 4);
+  if (last && width == 12288)
+    for (int c = 0; c < PG_CBUF_CONTEXTS; c++) {
+      uint64_t context = atomic_load(&cbufferContexts[c]);
+      if (!context || context + 2328 > env.memory.size) break;
+      memcpy(env.memory.data + context + 1656 + 6 * 8, &buffer, 8);
+    }
+#endif
+  pg_cbuffer_leave_contexts(buffer);
+  if (!pg_cbuffer_on()) return;
+  PGFreedCBuffer entry = {buffer, timeMS(CLOCK_MONOTONIC), 0, 0, {0}};
+  memcpy(&entry.size, env.memory.data + buffer + 96, 4);
+  void *frames[PG_CBUF_FRAMES + 2]; int count = backtrace(frames, PG_CBUF_FRAMES + 2);
+  for (int i = 2; i < count; i++) entry.frames[i - 2] = (uintptr_t)frames[i];
+  pthread_mutex_lock(&cbufferLock);
+  if (cbufferFreedCount > PG_CBUF_SLOTS / 4 * 3) { memset(cbufferFreed, 0, PG_CBUF_SLOTS * sizeof *cbufferFreed); cbufferFreedCount = 0; }
+  PGFreedCBuffer *old = pg_cbuffer_find(buffer);
+  if (old) *old = entry;
+  else {
+    uint32_t i = pg_cbuffer_hash(buffer);
+    while (cbufferFreed[i].buffer) i = (i + 1) & (PG_CBUF_SLOTS - 1);
+    cbufferFreed[i] = entry; cbufferFreedCount++;
+  }
+  uint64_t total = ++cbufferFreedTotal;
+  pthread_mutex_unlock(&cbufferLock);
+  if (total <= 3 || total == 10 || total == 100 || total == 1000 || total == 10000) {
+    char line[300]; pg_cbuffer_describe(buffer, line, sizeof line);
+    char out[360]; snprintf(out, sizeof out, "Constant buffer trace (PG_CBUF_TRACE=1, GTA-198): %llu freed so far, the last 0x%llx (%u bytes).%s", (unsigned long long)total, (unsigned long long)buffer, entry.size, line);
+    pg_log(out);
+  }
+}
+void pg_cbuffer_made(u64 buffer) {
+  if (!pg_cbuffer_on()) return;
+  pthread_mutex_lock(&cbufferLock);
+  PGFreedCBuffer *entry = pg_cbuffer_find(buffer);
+  if (entry) pg_cbuffer_remove(entry);
+  pthread_mutex_unlock(&cbufferLock);
+}
+void pg_cbuffer_bound(w2c_game *instance, u64 buffer, u32 stage, u32 slot) {
+  (void)instance;
+  if (!pg_cbuffer_on()) return;
+  {   // which sizes of constant buffer go to which slot: each new (size, stage, slot) once, up to 120 lines
+    static uint64_t seen[256]; static _Atomic int seenCount;
+    uint32_t size = 0; if (buffer + 100 <= env.memory.size) memcpy(&size, env.memory.data + buffer + 96, 4);
+    uint64_t key = (uint64_t)size << 16 | stage << 8 | slot;
+    bool fresh = true;
+    pthread_mutex_lock(&cbufferLock);
+    int n = seenCount;
+    for (int i = 0; i < n && i < 256; i++) if (seen[i] == key) { fresh = false; break; }
+    if (fresh && n < 120) { seen[n] = key; seenCount = n + 1; } else fresh = false;
+    pthread_mutex_unlock(&cbufferLock);
+    if (fresh) { char line[160]; snprintf(line, sizeof line, "Constant buffer trace: a %u-byte buffer (0x%llx) bound to stage %u slot %u.", size, (unsigned long long)buffer, stage, slot); pg_log(line); }
+  }
+  pthread_mutex_lock(&cbufferLock);
+  PGFreedCBuffer *entry = pg_cbuffer_find(buffer);
+  uint32_t binds = entry ? ++entry->binds : 0;
+  uint64_t stale = entry ? ++cbufferStaleBinds : 0;
+  pthread_mutex_unlock(&cbufferLock);
+  static _Atomic uint32_t logged;
+  if (!entry || (binds > 1 && stale > 64) || atomic_fetch_add(&logged, 1) >= 300) return;
+  uint64_t vtable = 0, program = 0, programs[2] = {0, 0};
+  if (buffer + 8 <= env.memory.size) memcpy(&vtable, env.memory.data + buffer, 8);
+  if (12623384 <= env.memory.size) { memcpy(&programs[0], env.memory.data + 12623368, 8); memcpy(&programs[1], env.memory.data + 12623376, 8); }
+  program = programs[stage == 1];
+  char freed[300], line[460];
+  pg_cbuffer_describe(buffer, freed, sizeof freed);
+  snprintf(line, sizeof line, "Constant buffer trace: slot %u (stage %u, program 0x%llx) binds the freed buffer 0x%llx (vtable now 0x%llx, bind %u of it, stale binds %llu).%s",
+           slot, stage, (unsigned long long)program, (unsigned long long)buffer, (unsigned long long)vtable, binds, (unsigned long long)stale, freed);
+  pg_log(line);
+}
+// The trace: a freed constant buffer given to Map, a copy or UpdateSubresource, with who does it.
+static void pg_cbuffer_used(uint64_t resource, const char *what) {
+  pthread_mutex_lock(&cbufferLock);
+  PGFreedCBuffer *entry = pg_cbuffer_find(resource);
+  bool found = entry != NULL;
+  pthread_mutex_unlock(&cbufferLock);
+  static _Atomic int logged;
+  if (!found || atomic_fetch_add(&logged, 1) >= 40) return;
+  void *frames[12]; int count = backtrace(frames, 12);
+  char line[600]; int used = snprintf(line, sizeof line, "Constant buffer trace: %s on the freed buffer 0x%llx, by:", what, (unsigned long long)resource);
+  for (int i = 1; i < count && used < (int)sizeof line; i++) {
+    const char *name = pg_app_symbol((uintptr_t)frames[i]);
+    if (!name || !strncmp(name, "wrap_", 5)) continue;
+    if (!strncmp(name, "w2c_game_", 9)) name += 9;
+    used += snprintf(line + used, sizeof line - used, " %s", name);
+  }
+  char freed[300]; pg_cbuffer_describe(resource, freed, sizeof freed);
+  if (used < (int)sizeof line) snprintf(line + used, sizeof line - used, ".%s", freed);
+  pg_log(line);
+}
+// " Freed N ms ago by: f1 < f2 < ..." for a buffer the trace kept, else "".
+static void pg_cbuffer_describe(uint64_t buffer, char *out, size_t size) {
+  out[0] = 0;
+  if (!pg_cbuffer_on()) return;
+  PGFreedCBuffer copy = {0};
+  pthread_mutex_lock(&cbufferLock);
+  PGFreedCBuffer *entry = pg_cbuffer_find(buffer);
+  if (entry) copy = *entry;
+  pthread_mutex_unlock(&cbufferLock);
+  if (!copy.buffer) return;
+  size_t used = (size_t)snprintf(out, size, " Freed %.0f ms ago by:", timeMS(CLOCK_MONOTONIC) - copy.freed);
+  for (int i = 0, named = 0; i < PG_CBUF_FRAMES && copy.frames[i] && used < size; i++) {
+    const char *name = pg_app_symbol(copy.frames[i]);
+    if (!name || !strncmp(name, "wrap_", 5)) continue;
+    if (!strncmp(name, "w2c_game_", 9)) name += 9;
+    used += (size_t)snprintf(out + used, size - used, "%s%s", named++ ? " < " : " ", name);
+  }
+}
 // Dependency jobs whose descriptor was already freed (Scripts/prepare_dependency_guard.py, GTA-144): the worker drops
 // them instead of allocating a 0xDDDDDDDD-byte scratch buffer or calling a garbage job pointer. Counted, first 4 logged.
 static _Atomic uint64_t dependencyJobsSkipped;
@@ -3280,7 +3774,208 @@ void pg_drop_destroyed_phases(w2c_game *instance) {
   }
   if (kept != count) memcpy(env.memory.data + list + 8, &kept, 2);
 }
+// The D3D layer's CPU copies, per resource (GTA-174, Scripts/prepare_d3d_storage_stats.py): which are idle and how
+// they are mapped, to see how much of the ~110 MB could be freed. PG_D3D_STATS=1 counts and logs a line every 30 s.
+static int pgD3DStats=-1;
+typedef struct { uint64_t pair, size; double made, lastMap; uint32_t maps; uint8_t kind, types, touched; } PGD3DCopy;
+#define PG_D3D_SLOTS 65536
+static PGD3DCopy *pgD3DCopies; static pthread_mutex_t pgD3DLock=PTHREAD_MUTEX_INITIALIZER; static _Thread_local uint32_t pgD3DMapType;
+static uint64_t pgD3DMapsByType[8]; static double pgD3DReported;
+static bool pg_d3d_on(void){
+  if(pgD3DStats<0){pgD3DStats=getenv("PG_D3D_STATS")!=NULL;if(pgD3DStats)pgD3DCopies=calloc(PG_D3D_SLOTS,sizeof(PGD3DCopy));if(!pgD3DCopies)pgD3DStats=0;}
+  return pgD3DStats;
+}
+static void pg_d3d_lazy_report(void);
+static PGD3DCopy *pg_d3d_slot(uint64_t pair,bool add){
+  uint32_t i=(uint32_t)((pair*0x9E3779B97F4A7C15ull)>>48),tomb=UINT32_MAX;
+  for(uint32_t n=0;n<PG_D3D_SLOTS;n++,i=(i+1)&(PG_D3D_SLOTS-1)){
+    PGD3DCopy *c=&pgD3DCopies[i];
+    if(c->pair==pair)return c;
+    if(c->pair==1&&tomb==UINT32_MAX)tomb=i;	// a freed slot
+    if(!c->pair){if(!add)return NULL;return &pgD3DCopies[tomb!=UINT32_MAX?tomb:i];}
+  }
+  return add&&tomb!=UINT32_MAX?&pgD3DCopies[tomb]:NULL;
+}
+static void pg_d3d_report(double now){
+  pgD3DReported=now;
+  uint64_t n[8]={0},b[8]={0},kindBytes[8]={0};	// 0 all, 1 never mapped, 2 discard only, 3 discard only idle >10 s, 4 >60 s, 5 other, 6 other idle >10 s
+  for(uint32_t i=0;i<PG_D3D_SLOTS;i++){
+    PGD3DCopy *c=&pgD3DCopies[i];if(c->pair<=1)continue;
+    double idle=(now-(c->maps?c->lastMap:c->made))/1000;
+    int cls=!c->maps?1:c->types==(1<<4)?2:5;
+    n[0]++;b[0]+=c->size;n[cls]++;b[cls]+=c->size;kindBytes[c->kind&7]+=c->size;
+    if(cls==2&&idle>10){n[3]++;b[3]+=c->size;}
+    if(cls==2&&idle>60){n[4]++;b[4]+=c->size;}
+    if(cls==5&&idle>10){n[6]++;b[6]+=c->size;}
+  }
+  // Never mapped: how many were also never touched by Unmap, a copy, UpdateSubresource or a readback (free to drop),
+  // by the kind that made them, and which touches the rest had.
+  uint64_t idleBytes[8]={0},idleCount=0,touchedBytes=0,touchKinds[64]={0};
+  for(uint32_t i=0;i<PG_D3D_SLOTS;i++){
+    PGD3DCopy *c=&pgD3DCopies[i];if(c->pair<=1||c->maps)continue;
+    if(!c->touched){idleBytes[c->kind&7]+=c->size;idleCount++;}else{touchedBytes+=c->size;touchKinds[c->touched&63]+=c->size;}
+  }
+  char touches[200]="";for(int t=1;t<64;t++)if(touchKinds[t]>1048576){size_t u=strlen(touches);snprintf(touches+u,sizeof touches-u,"%s%s%s%s%s%s %.1f MB; ",t&1?"unmap ":"",t&2?"copy-to ":"",t&4?"copy-from ":"",t&8?"readback-to ":"",t&16?"readback-from ":"",t&32?"update":"",touchKinds[t]/1048576.0);}
+  char idle[320];
+  snprintf(idle,sizeof idle,"D3D CPU copies never mapped (GTA-174): untouched %llu, %.1f MB (buffers %.1f, Texture2D %.1f, other %.1f MB); touched %.1f MB: %s",
+    (unsigned long long)idleCount,(idleBytes[1]+idleBytes[2]+idleBytes[3]+idleBytes[4]+idleBytes[5]+idleBytes[6])/1048576.0,idleBytes[1]/1048576.0,idleBytes[3]/1048576.0,(idleBytes[2]+idleBytes[4]+idleBytes[5]+idleBytes[6])/1048576.0,touchedBytes/1048576.0,touches);
+  pg_log(idle);
+  char line[660];
+  snprintf(line,sizeof line,"D3D CPU copies (GTA-174): %llu, %.1f MB | made by CreateBuffer %.1f, Texture1D %.1f, Texture2D %.1f, Texture3D %.1f, Map %.1f, readback %.1f, when first needed %.1f MB"
+    " | never mapped %llu, %.1f MB | mapped only to discard %llu, %.1f MB (idle >10 s %llu, %.1f MB; >60 s %llu, %.1f MB) | mapped otherwise %llu, %.1f MB (idle >10 s %llu, %.1f MB)"
+    " | maps: read %llu, write %llu, read-write %llu, discard %llu, no-overwrite %llu",
+    (unsigned long long)n[0],b[0]/1048576.0,kindBytes[1]/1048576.0,kindBytes[2]/1048576.0,kindBytes[3]/1048576.0,kindBytes[4]/1048576.0,kindBytes[5]/1048576.0,kindBytes[6]/1048576.0,kindBytes[7]/1048576.0,
+    (unsigned long long)n[1],b[1]/1048576.0,(unsigned long long)n[2],b[2]/1048576.0,(unsigned long long)n[3],b[3]/1048576.0,(unsigned long long)n[4],b[4]/1048576.0,
+    (unsigned long long)n[5],b[5]/1048576.0,(unsigned long long)n[6],b[6]/1048576.0,
+    (unsigned long long)pgD3DMapsByType[1],(unsigned long long)pgD3DMapsByType[2],(unsigned long long)pgD3DMapsByType[3],(unsigned long long)pgD3DMapsByType[4],(unsigned long long)pgD3DMapsByType[5]);
+  pg_log(line);
+  pg_d3d_lazy_report();
+}
+void pg_d3d_made(u64 pair,u64 size,u32 kind){
+  if(!pg_d3d_on())return;
+  double now=timeMS(CLOCK_MONOTONIC);
+  pthread_mutex_lock(&pgD3DLock);
+  PGD3DCopy *c=pg_d3d_slot(pair,true);
+  if(c)*c=(PGD3DCopy){pair,size,now,0,0,(uint8_t)kind,0,0};
+  pthread_mutex_unlock(&pgD3DLock);
+}
+void pg_d3d_gone(u64 pair){
+  if(!pg_d3d_on())return;
+  pthread_mutex_lock(&pgD3DLock);
+  PGD3DCopy *c=pg_d3d_slot(pair,false);
+  if(c)c->pair=1;
+  pthread_mutex_unlock(&pgD3DLock);
+}
+void pg_d3d_map_type(u32 type){pgD3DMapType=type;}
+// A resource given to Unmap, a copy, UpdateSubresource or a readback: its copy's pair sits at +120 (buffers), +128
+// (1D), +136 (3D) or +144 (2D) inside it.
+void pg_d3d_touch(u64 resource,u32 what){
+  if(!resource||!pg_d3d_on())return;
+  pthread_mutex_lock(&pgD3DLock);
+  static const uint32_t at[]={120,128,136,144};
+  for(int i=0;i<4;i++){PGD3DCopy *c=pg_d3d_slot(resource+at[i],false);if(c){c->touched|=(uint8_t)what;break;}}
+  pthread_mutex_unlock(&pgD3DLock);
+}
+void pg_d3d_mapped(u64 pair){
+  if(!pg_d3d_on())return;
+  double now=timeMS(CLOCK_MONOTONIC);
+  pthread_mutex_lock(&pgD3DLock);
+  PGD3DCopy *c=pg_d3d_slot(pair,false);
+  if(c){c->maps++;c->lastMap=now;c->types|=(uint8_t)(1u<<(pgD3DMapType&7));}
+  pgD3DMapsByType[pgD3DMapType&7]++;
+  if(now-pgD3DReported>30000)pg_d3d_report(now);
+  pthread_mutex_unlock(&pgD3DLock);
+}
+// Lazy CPU copies (GTA-174, Scripts/prepare_d3d_lazy_copies.py). Of the ~110 MB of copies above, about 77 MB were
+// never mapped, copied or read back in a city drive, and nearly all of them were made without initial data: calloc
+// gave them zeros and nothing ever wrote them. Such a copy now waits until something needs it. The D3D layer's
+// Create functions ask pg_d3d_lazy_create before they make one, and Map, CopyResource (both resources),
+// CopySubresourceRegion, UpdateSubresource and GpuReadback (the destination) call pg_d3d_lazy_need first, which
+// makes it then: zeroed, so exactly what the early copy would have held, since only those calls (and Create) read
+// or write a copy. The renderer never reads one: every upload travels inside the command ring.
+// A resource made with data keeps its copy from creation, as before (in a city drive: Rage's staging mirrors of
+// textures it may read back, 512x512 and larger BGRA8, about 10 MB alive).
+// A lazy copy's {pointer, size} pair is {0, size}: no original code reads the size while the pointer is 0 (Map and
+// GpuReadback set it before they allocate one; the destructors skip a null copy), and nothing else leaves the pair
+// that way. PG_D3D_KEEP=1 makes every copy at creation, as before: for A/B runs, and as a fallback for players.
+// emscripten_builtin_calloc, which the patch adds to the engine. This weak stand-in only lets a build without the
+// patch link: there Create never asks, so no copy ever waits.
+__attribute__((weak)) u64 pg_d3d_engine_calloc(w2c_game *instance,u64 size){(void)instance;(void)size;return 0;}
+static int pgD3DLazy=-1;
+static pthread_mutex_t pgD3DLazyLock=PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t pgLazyVtable[4]; static uint32_t pgLazyOffset[4];	// per kind (buffer, 1D, 2D, 3D): its vtable, its pair's offset
+// Since launch, counts and bytes: [0] buffers and [1] textures made lazy; [2] buffers and [3] textures made with
+// data (copy kept); [4] lazy copies made later, when first needed.
+static _Atomic uint64_t pgLazyCount[5],pgLazyBytes[5];
+// With PG_D3D_STATS=1: the kinds of 2D texture made with data, for what to try next.
+#define PG_LAZY_CLASSES 64
+typedef struct { uint32_t format,width,height,mips,array,usage,bind,cpu; uint64_t count,bytes; } PGLazyClass;
+static PGLazyClass pgLazyClasses[PG_LAZY_CLASSES]; static pthread_mutex_t pgLazyClassLock=PTHREAD_MUTEX_INITIALIZER;	// alone: the report holds pgD3DLock
+static inline uint8_t *pg_d3d_memory(void){return (uint8_t *)env.memory.data;}
+static inline uint64_t pg_d3d_word(uint64_t at){uint64_t v=0;if(at+8<=env.memory.size)memcpy(&v,pg_d3d_memory()+at,8);return v;}
+// Create, before it makes a copy of `size` bytes for `resource` (kind 1 buffer, 2-4 texture 1D-3D) at `pair`,
+// with `init` the D3D11_SUBRESOURCE_DATA (array) or 0. Returns 1 when the copy waits: Create then skips it.
+u32 pg_d3d_lazy_create(w2c_game *instance,u64 resource,u64 pair,u64 size,u64 init,u32 kind){
+  (void)instance;
+  if(pgD3DLazy<0){
+    const char *keep=getenv("PG_D3D_KEEP");pgD3DLazy=!(keep&&atoi(keep));
+    pg_log(pgD3DLazy?"D3D CPU copies: made when first needed (GTA-174; PG_D3D_KEEP=1 makes them at creation).":"D3D CPU copies: made at creation (PG_D3D_KEEP=1).");
+  }
+  if(!pgD3DLazy||kind<1||kind>4||!size||pair<resource||pair-resource>=4096||pair+16>env.memory.size||resource+176>env.memory.size)return 0;
+  const int texture=kind!=1;
+  if(init&&(texture||pg_d3d_word(init))){	// made with data (a buffer's is one pointer, pSysMem; any texture data counts)
+    atomic_fetch_add(&pgLazyCount[2+texture],1);atomic_fetch_add(&pgLazyBytes[2+texture],size);
+    if(kind==3&&pg_d3d_on()){	// D3D11_TEXTURE2D_DESC from +96: width, height, mips, array, format, samples (2), usage, bind, cpu, misc
+      uint32_t d[11];memcpy(d,pg_d3d_memory()+resource+96,sizeof d);
+      pthread_mutex_lock(&pgLazyClassLock);
+      for(int i=0;i<PG_LAZY_CLASSES;i++){
+        PGLazyClass *c=&pgLazyClasses[i];
+        if(c->count&&(c->format!=d[4]||c->width!=d[0]||c->height!=d[1]||c->mips!=d[2]||c->array!=d[3]||c->usage!=d[7]||c->bind!=d[8]||c->cpu!=d[9]))continue;
+        if(!c->count){c->format=d[4];c->width=d[0];c->height=d[1];c->mips=d[2];c->array=d[3];c->usage=d[7];c->bind=d[8];c->cpu=d[9];}
+        c->count++;c->bytes+=size;break;
+      }
+      pthread_mutex_unlock(&pgLazyClassLock);
+    }
+    return 0;
+  }
+  uint64_t vtable=pg_d3d_word(resource);
+  if(!vtable)return 0;
+  if(atomic_load(&pgLazyVtable[kind-1])!=vtable){pgLazyOffset[kind-1]=(uint32_t)(pair-resource);atomic_store(&pgLazyVtable[kind-1],vtable);}
+  __atomic_store_n((uint64_t *)(pg_d3d_memory()+pair+8),size,__ATOMIC_RELEASE);	// the pointer stays 0
+  atomic_fetch_add(&pgLazyCount[texture],1);atomic_fetch_add(&pgLazyBytes[texture],size);
+  return 1;
+}
+// Before Map, CopyResource, CopySubresourceRegion, UpdateSubresource or GpuReadback uses `resource`: its copy, if
+// it waits, is made now (zeroed).
+static void pg_cbuffer_used(uint64_t resource, const char *what);
+void pg_d3d_lazy_need(w2c_game *instance,u64 resource){
+  if(pg_cbuffer_tracing==1&&resource)pg_cbuffer_used(resource,"a Map, copy or update");
+  if(pgD3DLazy!=1||!resource)return;
+  uint64_t vtable=pg_d3d_word(resource),offset=0;
+  if(!vtable)return;
+  for(int k=0;k<4;k++)if(atomic_load(&pgLazyVtable[k])==vtable){offset=pgLazyOffset[k];break;}
+  if(!offset||resource+offset+16>env.memory.size)return;
+  uint64_t pair=resource+offset,*p=(uint64_t *)(pg_d3d_memory()+pair);
+  if(__atomic_load_n(&p[0],__ATOMIC_ACQUIRE)||!__atomic_load_n(&p[1],__ATOMIC_ACQUIRE))return;	// a copy, or none coming (no CPU access)
+  pthread_mutex_lock(&pgD3DLazyLock);
+  uint64_t size=__atomic_load_n(&p[1],__ATOMIC_ACQUIRE);
+  if(!__atomic_load_n(&p[0],__ATOMIC_ACQUIRE)&&size){	// still waiting: another thread didn't make it meanwhile
+    uint64_t copy=pg_d3d_engine_calloc(instance,size);
+    if(!copy){static bool told;if(!told){told=true;pg_log("D3D CPU copies: no engine memory for a copy when first needed (GTA-174).");}}
+    else{
+      __atomic_store_n(&p[0],copy,__ATOMIC_RELEASE);
+      // The engine's totals, as Create keeps them: bytes at 8324208, count at 8324216, peak at 8324224.
+      uint64_t bytes=pg_d3d_word(8324208)+size,count=pg_d3d_word(8324216)+1,peak=pg_d3d_word(8324224);
+      uint8_t *mem=pg_d3d_memory();
+      if(8324232<=env.memory.size){memcpy(mem+8324208,&bytes,8);memcpy(mem+8324216,&count,8);if(bytes>peak)memcpy(mem+8324224,&bytes,8);}
+      pg_d3d_made(pair,size,7);
+      atomic_fetch_add(&pgLazyCount[4],1);atomic_fetch_add(&pgLazyBytes[4],size);
+    }
+  }
+  pthread_mutex_unlock(&pgD3DLazyLock);
+}
+// With PG_D3D_STATS=1, after the copies line (since launch, not what is alive now).
+static void pg_d3d_lazy_report(void){
+  if(pgD3DLazy!=1)return;
+  #define C(i) (unsigned long long)atomic_load(&pgLazyCount[i]),atomic_load(&pgLazyBytes[i])/1048576.0
+  char line[400];
+  snprintf(line,sizeof line,"D3D CPU copies when first needed (GTA-174): waited at creation: buffers %llu, %.1f MB, textures %llu, %.1f MB"
+    " | made later %llu, %.1f MB | made with data, kept: buffers %llu, %.1f MB, textures %llu, %.1f MB",C(0),C(1),C(4),C(2),C(3));
+  #undef C
+  pg_log(line);
+  pthread_mutex_lock(&pgLazyClassLock);
+  char kinds[600]="";int used=0;bool shown[PG_LAZY_CLASSES]={0};
+  for(int k=0;k<6&&used<(int)sizeof kinds-1;k++){
+    int best=-1;for(int i=0;i<PG_LAZY_CLASSES;i++)if(pgLazyClasses[i].count&&!shown[i]&&(best<0||pgLazyClasses[i].bytes>pgLazyClasses[best].bytes))best=i;
+    if(best<0)break;shown[best]=true;
+    PGLazyClass *c=&pgLazyClasses[best];
+    used+=snprintf(kinds+used,sizeof kinds-used,"%s%llu x %ux%u fmt %u mips %u array %u usage %u bind %#x cpu %#x (%.1f MB)",k?"; ":"",(unsigned long long)c->count,c->width,c->height,c->format,c->mips,c->array,c->usage,c->bind,c->cpu,c->bytes/1048576.0);
+  }
+  pthread_mutex_unlock(&pgLazyClassLock);
+  if(kinds[0]){char out[680];snprintf(out,sizeof out,"D3D CPU copies made with data, 2D textures (GTA-174): %s",kinds);pg_log(out);}
+}
 void pg_note_call_indirect(const char *function,uint32_t index,uint32_t size){indirectFunction=function;indirectIndex=index;indirectSize=size;}
+const char *pg_app_symbol(uintptr_t pc);
 void pg_record_trap(int code) {
   pg_invoke_top=NULL; // the trap leaves every invoke_* on this thread, so their jump points are gone
   void *frames[20];int count=backtrace(frames,20);char line[160];
@@ -3288,6 +3983,16 @@ void pg_record_trap(int code) {
   // Names the engine function (w2c_game_fN) for an invalid indirect call, which native frames can't do.
   if(code==WASM_RT_TRAP_CALL_INDIRECT&&indirectFunction){snprintf(line,sizeof line,"  indirect call in %s, table index %u of %u",indirectFunction,indirectIndex,indirectSize);pg_log(line);}
   for(int i=0;i<count;i++){snprintf(line,sizeof line,"  native frame %d: %p",i,frames[i]);pg_log(line);}
+  // The functions by name (GTA-178): the stop screen tells known causes apart by the engine functions (fN, see
+  // Generated/funcnames.tsv) and the port function they were called from (pg_asi_native: a script mod).
+  char names[400]="";int named=0;
+  for(int i=0;i<count&&named<8;i++){
+    const char *name=pg_app_symbol((uintptr_t)frames[i]);
+    if(!name||!strncmp(name,"wrap_",5)||!strcmp(name,"pg_record_trap")||!strcmp(name,"wasm_rt_trap"))continue;
+    if(!strncmp(name,"w2c_game_",9))name+=9;
+    size_t used=strlen(names);snprintf(names+used,sizeof names-used,"%s%s",named?" < ":"",name);named++;
+  }
+  if(named){char out[440];snprintf(out,sizeof out,"Native trap functions: %s",names);pg_log(out);}
 }
 
 #include "NativeGraphics.h"
@@ -3302,27 +4007,43 @@ void w2c_env_wgpu_start_worker(struct w2c_env *host,u64 ring,u64 size,u64 debug)
 // REQUEST_SCALEFORM_MOVIE for a movie the game files don't have (Scripts/prepare_missing_scaleform.py):
 // the barber asks for COLOUR_SWITCHER_01/02 and waited for them until it gave up without a menu (GTA-43).
 // The request is made again for midsized_message, which every game version has and which draws nothing
-// until a script asks it to show a message; the name string is rewritten so later requests go straight
-// there. Script commands run on one thread.
+// until a script asks it to show a message. Script commands run on one thread.
+// A missing name is remembered (GTA-74): a second CreateMovie for it doesn't fail but answers with a slot that
+// never loads (the failed first one left the name registered as a movie). The barber copies COLOUR_SWITCHER_01/02 into its
+// name strings again on every visit, so the in-place rewrite alone didn't last: on the second visit it got that
+// slot, waited 8 s for it and dropped back to "press to get a haircut". Later requests for a remembered name
+// now become the stand-in before CreateMovie runs.
 u32 PG_FN_REQUEST_SCALEFORM_MOVIE(w2c_game*, u64, u32, u32); // graphics_commands::CommandRequestScaleformMovieCommon
 static u32 scaleformFlags[2]; static bool scaleformStandIn;
+static const char scaleformStandInName[] = "midsized_message";
+static char scaleformMissing[8][64]; static int scaleformMissingCount;
 void pg_scaleform_request_begin(w2c_game *instance, u64 name, u32 a, u32 b) {
-  (void)instance; (void)name;
-  if (!scaleformStandIn) { scaleformFlags[0] = a; scaleformFlags[1] = b; }
+  (void)instance;
+  if (scaleformStandIn) return;
+  scaleformFlags[0] = a; scaleformFlags[1] = b;
+  if (!name || !scaleformMissingCount) return;
+  const char *text = pg_string(&env, name);
+  size_t length = strnlen(text, 64);
+  if (length < sizeof scaleformStandInName - 1 || length >= 64) return;
+  for (int i = 0; i < scaleformMissingCount; i++) {
+    if (strcasecmp(scaleformMissing[i], text)) continue;
+    memcpy(pg_pointer(&env, name, sizeof scaleformStandInName), scaleformStandInName, sizeof scaleformStandInName);
+    return;
+  }
 }
 u32 pg_scaleform_missing(w2c_game *instance, u64 name) {
-  static const char standIn[] = "midsized_message";
   if (scaleformStandIn) return 0; // the stand-in failed too
   size_t length = strnlen(pg_string(&env, name), 64);
   char line[200];
-  if (length < sizeof standIn - 1) {
+  if (length < sizeof scaleformStandInName - 1) {
     snprintf(line, sizeof line, "Scaleform movie \"%.64s\" isn't in the game files.", pg_string(&env, name));
     pg_log(line);
     return 0;
   }
   snprintf(line, sizeof line, "Scaleform movie \"%.64s\" isn't in the game files; scripts get a blank one instead.", pg_string(&env, name));
   pg_log(line);
-  memcpy(pg_pointer(&env, name, sizeof standIn), standIn, sizeof standIn);
+  if (length < sizeof scaleformMissing[0] && scaleformMissingCount < 8) memcpy(scaleformMissing[scaleformMissingCount++], pg_string(&env, name), length + 1);
+  memcpy(pg_pointer(&env, name, sizeof scaleformStandInName), scaleformStandInName, sizeof scaleformStandInName);
   scaleformStandIn = true;
   u32 handle = PG_FN_REQUEST_SCALEFORM_MOVIE(instance, name, scaleformFlags[0], scaleformFlags[1]);
   scaleformStandIn = false;

@@ -805,10 +805,29 @@ static void controlMetaOverlay(uint32_t id,uint64_t offset,uint8_t *destination,
 //   at slot 899 (logs 619, 716, 721, 882). The files this was tested with say 1400 and register about 1030.
 // - CScenarioInfo: 220, filled by add-on packs with scenarios (log 948).
 // - phInstGta: physics instances; the pc section's 8192 filled with no mods at all, driving in a mission (log 895).
-static const struct { const char *pool, *what; long minimum; } pgGamePools[] = {
+// - fwScriptGuid: script handles for entities; not in the file, so the game's default of 700 applies (CGameScriptHandler
+//   Mgr::Init). Script mods fill it in long sessions (spawned cars, Menyoo maps): 23 stops in 23 player logs on
+//   v1.4.3-v1.4.6 in fwPool<fwScriptGuid>::PoolFullCallback, NativeTrainer and Menyoo running (GTA-178). Added.
+static const struct { const char *pool, *what; long minimum; bool add; } pgGamePools[] = {
   {"HandlingData", "vehicle handling entries", 3000}, {"ScriptStore", "scripts", 1500},
   {"CScenarioInfo", "scenario types", 400}, {"phInstGta", "physics instances", 12288},
+  {"fwScriptGuid", "script entity handles", 3000, true},
 };
+// A pool the file doesn't list: an entry in every <PoolSizes> section, in the room compacting makes.
+NSData *PGGameConfigAddPool(NSData *original,NSString *pool,long size){
+  NSString *text=[[NSString alloc] initWithData:original encoding:NSUTF8StringEncoding];
+  if(!text||[text containsString:[NSString stringWithFormat:@"<PoolName>%@</PoolName>",pool]]||![text containsString:@"<PoolSizes>"])return nil;
+  NSRegularExpression *gaps=[NSRegularExpression regularExpressionWithPattern:@">\\s+<" options:0 error:nil];
+  NSString *compact=[[gaps stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0,text.length) withTemplate:@"><"]
+                     stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSString *item=[NSString stringWithFormat:@"<PoolSizes><Entries><Item><PoolName>%@</PoolName><PoolSize value=\"%ld\"/></Item>",pool,size];
+  NSString *added=[compact stringByReplacingOccurrencesOfString:@"<PoolSizes><Entries>" withString:item];
+  if([added isEqualToString:compact])return nil;
+  NSMutableData *out=[[added dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+  if(out.length>original.length)return nil;
+  while(out.length<original.length)[out appendBytes:" " length:1];
+  return out;
+}
 static NSData *gameConfig;
 NSData *PGGameConfigRewrite(NSData *original,NSString *pool,long minimum,long *was){
   NSString *text=[[NSString alloc] initWithData:original encoding:NSUTF8StringEncoding];
@@ -850,7 +869,9 @@ static void gameConfigOverlay(uint32_t id,uint64_t offset,uint8_t *destination,i
       for(size_t i=0;current&&i<sizeof pgGamePools/sizeof *pgGamePools;i++){
         long was=-1;NSData *rewritten=PGGameConfigRewrite(current,@(pgGamePools[i].pool),pgGamePools[i].minimum,&was);
         char line[160];
-        if(rewritten)snprintf(line,sizeof line,"Game config: room for %ld %s (was %ld).",pgGamePools[i].minimum,pgGamePools[i].what,was);
+        if(!rewritten&&was<0&&pgGamePools[i].add&&(rewritten=PGGameConfigAddPool(current,@(pgGamePools[i].pool),pgGamePools[i].minimum)))
+          snprintf(line,sizeof line,"Game config: room for %ld %s (added; the game's default is lower).",pgGamePools[i].minimum,pgGamePools[i].what);
+        else if(rewritten)snprintf(line,sizeof line,"Game config: room for %ld %s (was %ld).",pgGamePools[i].minimum,pgGamePools[i].what,was);
         else if(was<0)snprintf(line,sizeof line,"Game config: no %s pool in the file; unchanged.",pgGamePools[i].pool);
         else snprintf(line,sizeof line,"Game config: %s %ld, unchanged.",pgGamePools[i].what,was);
         pg_log(line);
@@ -884,6 +905,31 @@ void PGSetMinimapLayout(double dx, double dy, double scale) {
 void PGSetHelpTextLayout(double x, double y, double scale) {
   helpX = x >= -0.1 && x <= 1 ? x : 0; helpY = y >= -0.1 && y <= 1 ? y : 0; helpScale = scale > 0.4 && scale < 2.5 ? scale : 1;
   helpMoved = helpX != 0 || helpY != 0 || helpScale != 1;
+}
+// HUD layout (GTA-197, Source/NativeHudLayout.c): the player's offsets for the feed (2), the top-right stats (3), the
+// subtitles (4) and the vehicle and area names (5), in the game's HUD units (fractions of the 16:9 HUD area; x to the
+// right, y down).
+bool pg_hud_piece(int piece, double *dx, double *dy, double *scale);
+static bool hudMoved(void) {
+  double dx, dy, s; bool moved = false;
+  for (int piece = 2; piece <= 5; piece++) moved |= pg_hud_piece(piece, &dx, &dy, &s);
+  return moved;
+}
+// Moves the <component> entries whose name matches: posX and posY by dx, dy (screen directions, whatever the alignment:
+// measured in the simulator, a right-aligned entry's larger posX is further right). Returns how many moved.
+static int shiftComponents(NSMutableString *text, NSString *names, double dx, double dy) {
+  if (dx == 0 && dy == 0) return 0;
+  NSRegularExpression *entry = [NSRegularExpression regularExpressionWithPattern:[NSString stringWithFormat:
+    @"(<component name=\"(?:%@)\"[^>]*?alignX=\")([A-Z])(\"[^>]*?posX=\")([-\\d.]+)(\"[^>]*?posY=\")([-\\d.]+)(\")", names]
+    options:0 error:nil];
+  NSArray<NSTextCheckingResult *> *matches = [entry matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+  for (NSTextCheckingResult *m in matches.reverseObjectEnumerator) {
+    const double x = [[text substringWithRange:[m rangeAtIndex:4]] doubleValue] + dx;
+    const double y = [[text substringWithRange:[m rangeAtIndex:6]] doubleValue] + dy;
+    [text replaceCharactersInRange:[m rangeAtIndex:6] withString:[NSString stringWithFormat:@"%.5f", y]];
+    [text replaceCharactersInRange:[m rangeAtIndex:4] withString:[NSString stringWithFormat:@"%.5f", x]];
+  }
+  return (int)matches.count;
 }
 NSData *PGFrontendRewrite(NSData *original, double dx, double dy, double scale) {
   NSString *text = [[NSString alloc] initWithData:original encoding:NSUTF8StringEncoding];
@@ -928,6 +974,20 @@ NSData *PGFrontendRewrite(NSData *original, double dx, double dy, double scale) 
       if (l && (helpY != 0 || helpScale != 1)) { [changed replaceCharactersInRange:[l rangeAtIndex:4] withString:@"-1"]; [changed replaceCharactersInRange:[l rangeAtIndex:2] withString:@"-1"]; }
     }
   }
+  // HUD layout (GTA-197). The stats are the top-right list (listId 1: wanted stars, cash, weapon, and the script HUD's
+  // entries in that list); the game stacks the list at the top itself (posY does nothing), so they move sideways only.
+  // The names are the vehicle, area and street names at the bottom right.
+  double hx, hy, hs;
+  pg_hud_piece(3, &hx, &hy, &hs);
+  NSMutableString *stats = [NSMutableString string];
+  NSRegularExpression *listed = [NSRegularExpression regularExpressionWithPattern:@"<component name=\"([A-Z0-9_]+)\"[^>]*?listId=\"1\"" options:0 error:nil];
+  for (NSTextCheckingResult *m in [listed matchesInString:changed options:0 range:NSMakeRange(0, changed.length)])
+    [stats appendFormat:@"%@%@", stats.length ? @"|" : @"", [changed substringWithRange:[m rangeAtIndex:1]]];
+  if (stats.length) shiftComponents(changed, stats, hx, 0);
+  pg_hud_piece(4, &hx, &hy, &hs);
+  shiftComponents(changed, @"HUD_SUBTITLE_TEXT", hx, hy);
+  pg_hud_piece(5, &hx, &hy, &hs);
+  shiftComponents(changed, @"HUD_VEHICLE_NAME|HUD_AREA_NAME|HUD_STREET_NAME", hx, hy);
   // The subtitle entry comes before the minimap's in the file: find the minimap entries again in the edited text.
   matches = [entry matchesInString:changed options:0 range:NSMakeRange(0, changed.length)];
   text = [changed copy];
@@ -945,9 +1005,15 @@ NSData *PGFrontendRewrite(NSData *original, double dx, double dy, double scale) 
     for (int i = 0; i < 4; i++) [changed replaceCharactersInRange:[m rangeAtIndex:groups[i]] withString:values[3 - i]];
   }
   // The notification feed sits over the minimap and "MUST match" its place: it follows sideways.
-  NSRegularExpression *feed = [NSRegularExpression regularExpressionWithPattern:@"(<GameStream>\\s*<position\\s+alignX=\"L\"\\s+alignY=\"B\"\\s+posX=\")([-\\d.]+)(\")" options:0 error:nil];
+  // The player can move it from there (GTA-197).
+  double feedX, feedY, feedScale;
+  pg_hud_piece(2, &feedX, &feedY, &feedScale);
+  NSRegularExpression *feed = [NSRegularExpression regularExpressionWithPattern:@"(<GameStream>\\s*<position\\s+alignX=\"L\"\\s+alignY=\"B\"\\s+posX=\")([-\\d.]+)(\"\\s+posY=\")([-\\d.]+)(\")" options:0 error:nil];
   NSTextCheckingResult *f = [feed firstMatchInString:changed options:0 range:NSMakeRange(0, changed.length)];
-  if (f) [changed replaceCharactersInRange:[f rangeAtIndex:2] withString:[NSString stringWithFormat:@"%.5f", [[changed substringWithRange:[f rangeAtIndex:2]] doubleValue] + dx]];
+  if (f) {
+    if (feedY != 0) [changed replaceCharactersInRange:[f rangeAtIndex:4] withString:[NSString stringWithFormat:@"%.5f", [[changed substringWithRange:[f rangeAtIndex:4]] doubleValue] + feedY]];
+    [changed replaceCharactersInRange:[f rangeAtIndex:2] withString:[NSString stringWithFormat:@"%.5f", [[changed substringWithRange:[f rangeAtIndex:2]] doubleValue] + dx + feedX]];
+  }
   NSRegularExpression *gaps = [NSRegularExpression regularExpressionWithPattern:@">\\s+<" options:0 error:nil];
   NSString *compact = [[gaps stringByReplacingMatchesInString:changed options:0 range:NSMakeRange(0, changed.length) withTemplate:@"><"]
                        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -967,11 +1033,14 @@ static void frontendOverlay(uint32_t id, uint64_t offset, uint8_t *destination, 
       // Test (PG_HELP_TEXT="x,y,scale"): a help message place without the app's Settings.
       test = getenv("PG_HELP_TEXT");
       if (test && sscanf(test, "%lf,%lf,%lf", &tx, &ty, &ts) == 3) PGSetHelpTextLayout(tx, ty, ts);
+      // Test (PG_HUD="piece:dx,dy,scale;..."): HUD layout pieces without the app's Settings (GTA-197).
+      extern void pg_hud_test_environment(void);
+      pg_hud_test_environment();
 #endif
       // A mod's frontend.xml is moved too: the player chose the place, and the default changes nothing.
       // (A leftover copy of the game's own file in Mods kept the setting from working, GTA-131.)
       NSData *rewritten = nil;
-      if (minimapDX != 0 || minimapDY != 0 || minimapScale != 1 || subtitleRaise > 0 || helpMoved) {
+      if (minimapDX != 0 || minimapDY != 0 || minimapScale != 1 || subtitleRaise > 0 || helpMoved || hudMoved()) {
         uint64_t size = [assetFiles[id][1] unsignedLongLongValue];
         NSMutableData *original = [NSMutableData dataWithLength:(NSUInteger)size];
         if (readAssetImpl(id, 0, original.mutableBytes, (uint32_t)size) == (int64_t)size)
@@ -980,6 +1049,8 @@ static void frontendOverlay(uint32_t id, uint64_t offset, uint8_t *destination, 
         snprintf(line, sizeof line, rewritten ? "Minimap: moved by %.3f, %.3f, size %.2f; subtitles raised by %.3f; help messages at %.3f, %.3f, size %.2f%s." : "Minimap: frontend.xml not as expected; position %.3f, %.3f, size %.2f, subtitles %.3f, help messages %.3f, %.3f, %.2f not applied%s.",
                  minimapDX, minimapDY, minimapScale, subtitleRaise, helpX, helpY, helpScale, modFiles[@(id)] ? " (in a mod's frontend.xml)" : "");
         pg_log(line);
+        extern void pg_hud_log(void);
+        pg_hud_log();
       }
       frontendLayout = rewritten ?: [NSData data];
     }
@@ -1133,7 +1204,14 @@ static void *assetLoop(void *unused) {
         uint32_t id=atomic_load(slot+1),len=atomic_load(slot+6);
         uint64_t off=(uint32_t)atomic_load(slot+2)|((uint64_t)(uint32_t)atomic_load(slot+3)<<32);
         uint64_t dest=(uint32_t)atomic_load(slot+4)|((uint64_t)(uint32_t)atomic_load(slot+5)<<32);
-        int64_t result=readAsset(id,off,pg_pointer(assetHost,dest,len),len);
+        // A read whose destination is outside engine memory (GTA-194: 8 player logs, all right after the engine asked for
+        // a car engine sound bank from a missing or damaged STREAMED_VEHICLES_GRANULAR.rpf) is answered as a failed
+        // read. pg_pointer would trap, and the trap ended this worker for good, leaving the request unanswered.
+        wasm_rt_shared_memory_t *memory=w2c_env_memory(assetHost);int64_t result=-1;
+        if(dest>memory->size||(uint64_t)len>memory->size-dest){
+          static _Atomic int told;
+          if(atomic_fetch_add(&told,1)<4){char line[200];snprintf(line,sizeof line,"Native asset read of file %u at %llu refused: its destination 0x%llx (+%u bytes) is outside engine memory.",id,(unsigned long long)off,(unsigned long long)dest,len);pg_log(line);}
+        } else result=readAsset(id,off,pg_pointer(assetHost,dest,len),len);
         atomic_store(slot+7,(int32_t)result);atomic_store(slot,2);
         pg_atomic_notify(w2c_env_memory(assetHost),address,UINT32_MAX);
       }

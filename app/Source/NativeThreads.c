@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
+#include <TargetConditionals.h>
 
 static struct w2c_env *mainHost;
 // The engine's threads run without a QoS class; under a steady multi-core load iOS may then put them on
@@ -20,11 +22,96 @@ void pg_engine_thread_attributes(pthread_attr_t *attrs) {
   }
   if (qos) pthread_attr_set_qos_class_np(attrs, (qos_class_t)qos, 0);
 }
-struct EngineThread {struct w2c_env host;struct w2c_wasi__snapshot__preview1 wasi;u64 pthread,start,arg;};
+struct EngineThread {struct w2c_env host;struct w2c_wasi__snapshot__preview1 wasi;u64 pthread,start,arg;wasm_rt_funcref_t *table;};
 static _Thread_local struct EngineThread *currentThread;
+// Function tables (GTA-192). Each engine thread is its own module instance with its own copy of the indirect function
+// table (89368 entries, 2.9 MB), which wasm2c_game_instantiate used to calloc on the new thread without a check. When
+// the save list thread ([RAGE] EnumerationThread) started for the autosave after Casing the Jewel Store, that calloc
+// returned NULL on a player's iPad (iPad13,4, increased memory limit not granted) and filling the table wrote to address
+// 0x20: the app was gone right after the mission (log 2438, crash at wasm2c_game_instantiate+0x1cc, the table fill).
+// Now a table that a thread is done with is kept for the next one, one spare is made with the main instance's table at
+// startup (while memory is plentiful), and a thread gets its table in pthread_create, before it exists: if there is none
+// at all, pthread_create answers EAGAIN instead of the app crashing. Scripts/prepare_thread_tables.py routes the table
+// allocation of wasm2c_game_instantiate and the release of wasm2c_game_free here.
+enum {SPARE_TABLES=1, KEPT_TABLES=3};
+static pthread_mutex_t tablesLock=PTHREAD_MUTEX_INITIALIZER;
+static wasm_rt_funcref_t *keptTables[KEPT_TABLES];
+static int keptCount;
+static uint32_t tableElements;	// the game's table size, from the main instance
+static _Atomic bool startupSpareMade;
+#if TARGET_OS_SIMULATOR
+static double tablesStartedAt;
+static double nowMS(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1000.0+t.tv_nsec/1e6;}
+#endif
+// Test (simulator, PG_TEST_TABLE_ALLOC_FAIL=<seconds>): from that long after startup, every new table fails to allocate,
+// as on the player's iPad at the autosave; later engine threads must still start.
+static bool testTablesFail(void){
+  #if TARGET_OS_SIMULATOR
+  static double failAfter=-2;
+  if(failAfter==-2){const char *v=getenv("PG_TEST_TABLE_ALLOC_FAIL");failAfter=v?atof(v):-1;}
+  if(failAfter>=0&&tablesStartedAt&&nowMS()-tablesStartedAt>failAfter*1000){
+    static _Atomic bool logged;if(!atomic_exchange(&logged,true))pg_log("TEST: new engine function tables fail to allocate from now on.");
+    return true;
+  }
+  #endif
+  return false;
+}
+static wasm_rt_funcref_t *newTable(uint32_t elements){
+  if(testTablesFail())return NULL;
+  return calloc(elements,sizeof(wasm_rt_funcref_t));
+}
+static wasm_rt_funcref_t *takeTable(uint32_t elements){
+  wasm_rt_funcref_t *data=NULL;
+  pthread_mutex_lock(&tablesLock);
+  if(keptCount&&elements==tableElements)data=keptTables[--keptCount];
+  pthread_mutex_unlock(&tablesLock);
+  if(data){memset(data,0,(size_t)elements*sizeof *data);return data;}	// as calloc'd
+  return newTable(elements);
+}
+static void keepTable(wasm_rt_funcref_t *data,uint32_t elements){
+  if(!data)return;
+  pthread_mutex_lock(&tablesLock);
+  if(keptCount<KEPT_TABLES&&elements==tableElements){keptTables[keptCount++]=data;data=NULL;}
+  pthread_mutex_unlock(&tablesLock);
+  free(data);
+}
+// Tops the kept tables up to SPARE_TABLES after a thread took one (it doesn't matter if this fails).
+static void makeSpareTables(void){
+  for(int made=0;made<SPARE_TABLES;made++){
+    pthread_mutex_lock(&tablesLock);int count=keptCount;pthread_mutex_unlock(&tablesLock);
+    if(count>=SPARE_TABLES||!tableElements)return;
+    wasm_rt_funcref_t *spare=newTable(tableElements);
+    if(!spare){char line[120];snprintf(line,sizeof line,"Engine function table: no spare made now (%d kept).",count);pg_log(line);return;}
+    keepTable(spare,tableElements);
+  }
+}
+void pg_allocate_funcref_table(wasm_rt_funcref_table_t *table,uint32_t elements,uint32_t maxElements){
+  if(!tableElements)tableElements=elements;
+  #if TARGET_OS_SIMULATOR
+  if(!tablesStartedAt)tablesStartedAt=nowMS();
+  #endif
+  wasm_rt_funcref_t *data=NULL;
+  struct EngineThread *thread=currentThread;
+  if(thread&&thread->table&&elements==tableElements){data=thread->table;thread->table=NULL;}	// zeroed in pthread_create
+  if(!data)data=takeTable(elements);
+  for(int tries=0;!data&&tries<50;tries++){
+    if(!tries){char line[160];snprintf(line,sizeof line,"Engine function table: no memory for %u entries; waiting up to 5 s.",elements);pg_log(line);}
+    usleep(100000);data=takeTable(elements);
+  }
+  if(!data){pg_log("Engine function table: still no memory after 5 s; this engine thread stops.");wasm_rt_trap(WASM_RT_TRAP_OOB);}
+  table->data=data;table->size=elements;table->max_size=maxElements;
+  if(!atomic_load(&startupSpareMade)){
+    wasm_rt_funcref_t *spare=calloc(elements,sizeof *spare);		// with the main instance, while memory is plentiful
+    if(spare)keepTable(spare,elements);
+    atomic_store(&startupSpareMade,true);
+  }
+}
+void pg_free_funcref_table(wasm_rt_funcref_table_t *table){
+  keepTable(table->data,table->size);table->data=NULL;table->size=0;
+}
 static void disposeThread(void *pointer) {
   struct EngineThread *thread=pointer;
-  wasm2c_game_free(&thread->host.game);wasm_rt_free_thread();free(thread);currentThread=NULL;
+  wasm2c_game_free(&thread->host.game);keepTable(thread->table,tableElements);wasm_rt_free_thread();free(thread);currentThread=NULL;
 }
 // Native names for the engine's threads, for the Threads line in the log (GTA-162, NativeThreadCPU.c). The game names
 // every thread it starts: rage::sysIpcCreateThread (f128) mallocs a 56-byte block, copies the name into it at offset
@@ -70,9 +157,19 @@ u32 w2c_env_0x5F_pthread_create_js(struct w2c_env *host,u64 pthread,u64 attr,u64
   struct EngineThread *thread=calloc(1,sizeof *thread);if(!thread)return 6;
   thread->host.memory=*w2c_env_memory(host);thread->wasi.env=&thread->host;
   thread->pthread=pthread;thread->start=routine;thread->arg=argument;
+  // Its function table first (GTA-192): a kept one, or a new one; without one the engine gets EAGAIN, not a crash.
+  testTablesFail();
+  if(tableElements){
+    thread->table=takeTable(tableElements);
+    if(!thread->table){
+      char line[160];snprintf(line,sizeof line,"Engine thread not started: no memory for its function table (%u entries); pthread_create answers EAGAIN.",tableElements);pg_log(line);
+      free(thread);return 6;
+    }
+    makeSpareTables();
+  }
   pthread_attr_t attrs;pthread_attr_init(&attrs);pthread_attr_setstacksize(&attrs,16*1024*1024);pg_engine_thread_attributes(&attrs);
   pthread_t native;int e=pthread_create(&native,&attrs,runThread,thread);pthread_attr_destroy(&attrs);
-  if(e){free(thread);return 6;}pthread_detach(native);return 0;
+  if(e){keepTable(thread->table,tableElements);free(thread);return 6;}pthread_detach(native);return 0;
 }
 void pg_threads_main(struct w2c_env *host){mainHost=host;}
 void w2c_env_0x5Femscripten_thread_cleanup(struct w2c_env *host,u64 thread) {

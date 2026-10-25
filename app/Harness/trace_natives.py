@@ -12,7 +12,7 @@ IS_CONTROL_JUST_PRESSED, which answered 0 while A was held.
 import lldb, os, re, struct, time
 from pathlib import Path
 
-MEMORY = 0x300000000   # where the simulator build maps wasm memory (env.memory.data)
+MEMORY = 0x300000000   # replaced at attach by env.memory.data: the host maps wasm memory wherever mmap puts it
 APP = Path(__file__).resolve().parents[1]
 state = dict(running=None, frames=0, done=False, order=[], pending=None, seen=0)
 
@@ -116,6 +116,10 @@ def __lldb_init_module(debugger, internal_dict):
                  want_frames=int(os.environ.get("TRACE_FRAMES", "1")), deadline=time.time() + float(os.environ.get("TRACE_SECONDS", "600")),
                  args_of=set(filter(None, os.environ.get("TRACE_ARGS", "").upper().split(","))), slot_var=sites[0][2], call_bps=[])
     target = debugger.GetSelectedTarget()
+    # A fixed address read nothing once the host mmap'd the memory anywhere: no script ever matched (0 frames, GTA-193).
+    global MEMORY
+    data = target.FindFirstGlobalVariable("env").GetChildMemberWithName("memory").GetChildMemberWithName("data")
+    if data.IsValid() and data.GetValueAsUnsigned(): MEMORY = data.GetValueAsUnsigned()
     target.BreakpointCreateByName("w2c_game_f%d" % run).SetScriptCallbackFunction("trace_natives.on_run")
     for path, line, _ in sites:
         call = target.BreakpointCreateByLocation(path, line); call.SetScriptCallbackFunction("trace_natives.on_call"); call.SetEnabled(False)

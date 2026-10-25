@@ -23,6 +23,8 @@
 #include <pthread.h>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <array>
 #include <sys/mman.h>
 #include <functional>
 #include <algorithm>
@@ -39,6 +41,7 @@ static struct TextureStats {
 	std::atomic<int64_t> kindBytes[8][2];		// [BC kind][sRGB]: GPU bytes, to see where decoded memory goes
 	std::atomic<uint64_t> createFailures{0}, decodeFailures{0}, bcReadbacks{0}, bcCopies{0};
 	std::atomic<int64_t> halfSize{0};		// Lite: textures on the GPU without their largest level
+	std::atomic<int64_t> quarterSize{0};		// of those, without their two largest (PG_LITE_BIG_MIP_SKIP)
 	std::atomic<uint64_t> missingLevel{0};	// Lite: copies or readbacks that needed a dropped level
 	std::atomic<uint64_t> convertMicros{0}, converts{0};	// BC to ASTC or pixels on the CPU (GTA-162: what converting ahead would save)
 } gTextureStats;
@@ -53,6 +56,13 @@ extern "C" double PGGPUFrameMilliseconds(void) {
 }
 // GPU buffers, for the report: how many, what they hold, and what iOS charges (whole 16 KB pages each).
 static struct BufferStats { std::atomic<int64_t> count{0}, bytes{0}, pages{0}, meshCount{0}, meshBytes{0}, cbCount{0}, cbBytes{0}, cbWritten{0}; } gBufferStats;
+// For the app memory line (GTA-174): Metal buffer memory, slabs and own buffers, rounded to pages.
+extern "C" uint64_t PGGPUBufferBytes(void) { int64_t v = gBufferStats.pages.load(); return v > 0 ? (uint64_t)v : 0; }
+// The per-frame rings of shared memory (constant buffer versions, upload staging): chunks only grow (GTA-174).
+static std::atomic<int64_t> gFrameRingBytes{0};
+extern "C" uint64_t PGFrameRingBytes(void) { int64_t v = gFrameRingBytes.load(); return v > 0 ? (uint64_t)v : 0; }
+// CPU copies of constant buffers (malloc), kept to rebuild each version.
+extern "C" uint64_t PGConstantCopyBytes(void) { int64_t v = gBufferStats.cbBytes.load(); return v > 0 ? (uint64_t)v : 0; }
 static uint64_t pageRound(uint64_t n) { return (n + 16383) & ~16383ull; }
 // Small mesh buffers share 4 MB slabs (GTA-34). iOS charges every MTLBuffer whole 16 KB pages, and most of
 // the game's ~8k vertex and index buffers hold a few KB: about 100 MB went to rounding at a 2.3 GB limit.
@@ -62,7 +72,15 @@ struct Slab { id<MTLBuffer> buf; std::map<uint32_t, uint32_t> free; };		// offse
 static std::vector<Slab> gSlabs;
 struct SlabFree { uint64_t serial; int32_t slab; uint32_t off, len; };
 static std::vector<SlabFree> gSlabPending;
-static const uint32_t kSlabBytes = 4 << 20, kSlabLargest = 64 << 10, kSlabAlign = 256;
+static const uint32_t kSlabBytes = 4 << 20, kSlabAlign = 256;
+// Meshes up to this size share 4 MB slabs; bigger ones get their own buffer, rounded up to whole 16 KB pages. 256 KB
+// was worse than 64 KB on a 4 GB city drive (288 MB of pages for 172 MB of meshes, against 255 for 195): bigger pieces
+// left more half-empty slabs (GTA-174). PG_SLAB_LARGEST_KB sets it for A/B runs.
+static uint32_t slabLargest() {
+	static uint32_t largest = 0;
+	if (!largest) { const char *v = getenv("PG_SLAB_LARGEST_KB"); long kb = v ? atol(v) : 64; largest = (uint32_t)(kb >= 16 && kb <= 1024 ? kb : 64) << 10; }
+	return largest;
+}
 static uint64_t currentSerial();
 extern "C" {
 uint32_t PGMeshRelease(uint32_t oid, const uint8_t *contents, uint32_t bytes, uint64_t *firstPage, uint32_t *pageCount, uint32_t *pageOffset);
@@ -73,7 +91,7 @@ int PGMeshReleaseOn(void);
 }
 Buffer::~Buffer() {
 	if (meshPages) PGMeshForget(meshPage, meshPages, 1);
-	if (!shadow.empty()) { gBufferStats.cbCount--; gBufferStats.cbBytes -= (int64_t)shadow.size(); if (version) gBufferStats.cbWritten--; }
+	if (bind & 4) { gBufferStats.cbCount--; gBufferStats.cbBytes -= (int64_t)shadow.size(); if (version) gBufferStats.cbWritten--; }		// BIND_CB
 	if (slab >= 0) gSlabPending.push_back({currentSerial(), slab, (uint32_t)base, (bytes + kSlabAlign - 1) & ~(kSlabAlign - 1)});
 	if (!counted) return;
 	gBufferStats.count--; gBufferStats.bytes -= (int64_t)counted; if (slab < 0) gBufferStats.pages -= (int64_t)pageRound(counted);
@@ -82,6 +100,7 @@ Buffer::~Buffer() {
 Texture::~Texture() {
 	gTextureStats.gpuBytes -= (int64_t)gpuBytes;
 	if (skip) gTextureStats.halfSize--;
+	if (skip > 1) gTextureStats.quarterSize--;
 	if (bcKind) { gTextureStats.bcGameBytes -= (int64_t)bcGameBytes; gTextureStats.bcGpuBytes -= (int64_t)gpuBytes; gTextureStats.kindBytes[bcKind][bcSrgb] -= (int64_t)gpuBytes; }
 	for (auto &it : compressedShadow) gTextureStats.shadowBytes -= (int64_t)it.second.size();
 	delete depthProxy;
@@ -275,6 +294,7 @@ struct Renderer {
 	uint64_t drawsAtPresent = 0, pendingAtPresent = 0;
 	std::mutex captureLock;
 	std::string captureName;
+	std::string burstName; int burstLeft = 0, burstIndex = 0;		// "burst": the next frames as PNGs (GTA-176 flicker test)
 };
 
 static Renderer *R;
@@ -319,10 +339,54 @@ static id<MTLBlitCommandEncoder> blitEncoder() {
 	return R->blit;
 }
 static void storeResult(uint64_t addr, uint64_t value, uint32_t seq);
+// Occlusion answers (GTA-176: lights flicker at night): how many, how many said "hidden", and how often the same query
+// changed between visible and hidden from one answer to the next. In a still scene, many flips mean unstable answers.
+static std::atomic<uint64_t> gOcclusionResults{0}, gOcclusionZero{0}, gOcclusionFlips{0};
+static uint64_t gQueriesEnded, gQueriesNoPass, gQueriesNoDraw, gQueryDraws;		// render thread only
+extern "C" uint64_t PGOcclusionLate(void), PGOcclusionReads(void);	// EngineHost.c: the game's reads, and the late ones
+static std::mutex gOcclusionLock;
+static std::unordered_map<uint64_t, bool> gOcclusionLast;		// query address -> last answer was visible
+static void noteOcclusion(uint64_t addr, uint64_t samples) {
+	gOcclusionResults++; if (!samples) gOcclusionZero++;
+	std::lock_guard<std::mutex> lock(gOcclusionLock);
+	auto it = gOcclusionLast.find(addr);
+	if (it == gOcclusionLast.end()) { if (gOcclusionLast.size() < 65536) gOcclusionLast.emplace(addr, samples != 0); }
+	else { if (it->second != (samples != 0)) gOcclusionFlips++; it->second = samples != 0; }
+}
 enum CommitReason { CPresent, CFence, CReadback, CIdle, CReasons };
 static const char *kCommitNames[CReasons] = {"present", "fence", "readback", "idle queries"};
 // Settings › Graphics › Frame rate 40 (GTA-154): how long each picture stays up at least (0: no pacing here).
 static std::atomic<double> gPresentInterval{0};
+// Pictures that reached the screen (GTA-200), from the drawables' on-glass times: how many, how many never showed,
+// and the gaps between them, which follow the screen's refresh rate (8.3 ms at 120 Hz, 12.5 ms at 80, 16.7 ms at 60).
+static std::mutex gShownLock;
+static std::vector<float> gShownGaps;		// milliseconds, since the last PGMetalRendererShownStats
+static double gShownLast = 0, gShownSince = 0;
+static uint32_t gShown = 0, gNotShown = 0;
+[[maybe_unused]] static void noteShown(double at) {
+	std::lock_guard<std::mutex> lock(gShownLock);
+	if (at <= 0) { gNotShown++; return; }
+	if (gShownSince <= 0) gShownSince = at;
+	if (gShownLast > 0 && at > gShownLast && gShownGaps.size() < 8192) gShownGaps.push_back(float((at - gShownLast) * 1000));
+	gShownLast = at; gShown++;
+}
+extern "C" void PGMetalRendererShownStats(double *perSecond, double *fastGapMs, double *medianGapMs, uint32_t *notShown) {
+	std::vector<float> gaps;
+	double since, last; uint32_t shown, dropped;
+	{
+		std::lock_guard<std::mutex> lock(gShownLock);
+		gaps.swap(gShownGaps); since = gShownSince; last = gShownLast; shown = gShown; dropped = gNotShown;
+		gShownSince = gShownLast; gShown = 0; gNotShown = 0;
+	}
+	*perSecond = last > since && shown > 1 ? (shown - 1) / (last - since) : 0;
+	*fastGapMs = *medianGapMs = 0;
+	if (!gaps.empty()) {
+		std::sort(gaps.begin(), gaps.end());
+		*fastGapMs = gaps[gaps.size() / 20];		// the fastest 5%: about one refresh of the screen when frames come quickly
+		*medianGapMs = gaps[gaps.size() / 2];
+	}
+	*notShown = dropped;
+}
 static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 	endEncoders();
 	if (!R->pendingQueries.empty()) {
@@ -333,7 +397,13 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 			const uint64_t *v = (const uint64_t *)vis.contents;
 			for (const PendingQuery &p : list) {
 				uint64_t result;
-				if (p.type == 1 || p.type == 5) { result = 0; for (uint32_t s : p.slots) result += v[s]; }
+				if (p.type == 1 || p.type == 5) {
+					result = 0; for (uint32_t s : p.slots) result += v[s];
+					static int visible = -1;		// PG_OQ_VISIBLE=1: every occlusion query says "visible" (GTA-176 test only)
+					if (visible < 0) visible = getenv("PG_OQ_VISIBLE") && atoi(getenv("PG_OQ_VISIBLE"));
+					if (visible) result = 1 << 20;
+					noteOcclusion(p.addr, result);
+				}
 				else if (p.type == 2) result = (uint64_t)(CACurrentMediaTime() * 1e9);
 				else result = 1;
 				storeResult(p.addr, result, p.seq);
@@ -345,6 +415,9 @@ static void commit(CommitReason reason, id<CAMetalDrawable> drawable = nil) {
 	// 40 FPS (Settings › Graphics › Frame rate): each picture stays up 1/40 s, every third refresh of a 120 Hz screen.
 	if (drawable) {
 		double interval = gPresentInterval.load();
+#if !TARGET_OS_SIMULATOR		// the simulator's Metal has no on-glass times
+		[drawable addPresentedHandler:^(id<MTLDrawable> shown) { noteShown(shown.presentedTime); }];
+#endif
 		if (interval <= 0) [cb presentDrawable:drawable];
 #if TARGET_OS_SIMULATOR
 		// The simulator's Metal has no minimum-duration present: the same pacing from present times, for tests.
@@ -384,11 +457,21 @@ static void slabRelease(int32_t slab, uint32_t off, uint32_t len) {
 	auto &free = gSlabs[slab].free;
 	auto next = free.lower_bound(off);
 	if (next != free.end() && off + len == next->first) { len += next->second; next = free.erase(next); }
+	bool merged = false;
 	if (next != free.begin()) {
 		auto prev = std::prev(next);
-		if (prev->first + prev->second == off) { prev->second += len; return; }
+		if (prev->first + prev->second == off) { prev->second += len; merged = true; }
 	}
-	free[off] = len;
+	if (!merged) free[off] = len;
+	// A slab with nothing left in it goes back to iOS (GTA-174): slabs used to stay for good, so meshes that
+	// streamed out left half-empty 4 MB slabs behind (a 4 GB city drive: 195 MB of meshes in 255 MB of pages).
+	// Its slot stays, empty, for the next slab; every piece freed here is past the GPU already (slabReclaim).
+	static int keep = -1;
+	if (keep < 0) keep = getenv("PG_SLAB_KEEP") && atoi(getenv("PG_SLAB_KEEP"));		// 1: as before, for A/B runs
+	if (!keep && free.size() == 1 && free.begin()->first == 0 && free.begin()->second == kSlabBytes) {
+		gSlabs[slab].buf = nil; free.clear();
+		gBufferStats.pages -= kSlabBytes;
+	}
 }
 static void slabReclaim() {
 	if (gSlabPending.empty()) return;
@@ -400,7 +483,7 @@ static bool slabAllocate(uint32_t bytes, int32_t &slab, uint32_t &off) {
 	uint32_t len = (bytes + kSlabAlign - 1) & ~(kSlabAlign - 1);
 	slabReclaim();
 	for (size_t i = 0; i < gSlabs.size(); i++)
-		for (auto it = gSlabs[i].free.begin(); it != gSlabs[i].free.end(); ++it) if (it->second >= len) {
+		for (auto it = gSlabs[i].free.begin(); gSlabs[i].buf && it != gSlabs[i].free.end(); ++it) if (it->second >= len) {
 			off = it->first; uint32_t rest = it->second - len;
 			gSlabs[i].free.erase(it);
 			if (rest) gSlabs[i].free[off + len] = rest;
@@ -408,9 +491,12 @@ static bool slabAllocate(uint32_t bytes, int32_t &slab, uint32_t &off) {
 		}
 	id<MTLBuffer> buf = [R->device newBufferWithLength:kSlabBytes options:MTLResourceStorageModeShared];
 	if (!buf) return false;
-	gSlabs.push_back({buf, {{len, kSlabBytes - len}}});
+	size_t empty = 0;
+	while (empty < gSlabs.size() && gSlabs[empty].buf) empty++;		// a slot a released slab left
+	if (empty == gSlabs.size()) gSlabs.push_back({});
+	gSlabs[empty] = {buf, {{len, kSlabBytes - len}}};
 	gBufferStats.pages += kSlabBytes;
-	slab = (int32_t)gSlabs.size() - 1; off = 0;
+	slab = (int32_t)empty; off = 0;
 	return true;
 }
 
@@ -426,7 +512,7 @@ static Alloc frameAlloc(NSUInteger size, NSUInteger align = 256) {
 	f.off = (f.off + align - 1) & ~(align - 1);
 	if (f.chunk >= f.chunks.size() || f.off + size > FrameRing::CHUNK) {
 		if (f.chunk < f.chunks.size()) { f.chunk++; f.off = 0; }
-		if (f.chunk >= f.chunks.size()) f.chunks.push_back([R->device newBufferWithLength:FrameRing::CHUNK options:MTLResourceStorageModeShared]);
+		if (f.chunk >= f.chunks.size()) { f.chunks.push_back([R->device newBufferWithLength:FrameRing::CHUNK options:MTLResourceStorageModeShared]); gFrameRingBytes += FrameRing::CHUNK; }
 	}
 	id<MTLBuffer> b = f.chunks[f.chunk];
 	NSUInteger off = f.off;
@@ -514,6 +600,7 @@ static View *view(uint32_t id, ObjKind k) { return R->objs.as<View>(id, k); }
 static State *state(uint32_t id) { return R->objs.as<State>(id, OState); }
 
 static uint32_t bcBlockBytes(int kind);
+static uint64_t gLiteBigSkip = 0;		// PG_LITE_BIG_MIP_SKIP (texels), 0 = off
 static void createTexture(const uint32_t *p) {
 	uint32_t id = p[0], dim = p[1], w = std::max(1u, p[2]), h = std::max(1u, p[3]), d = std::max(1u, p[4]), mips = std::max(1u, p[5]);
 	uint32_t arraySize = std::max(1u, p[6]), dxgi = p[7], bind = p[8], samples = std::max(1u, p[9]);
@@ -531,6 +618,10 @@ static void createTexture(const uint32_t *p) {
 	    (w >> 1) >= 4 && (h >> 1) >= 4;
 	if (skippable && ((gSkipTopMip && (uint64_t)w * h > 128 * 128) || (gSkipBigTopMip && (uint64_t)w * h >= gSkipBigTopMip)))
 		t->skip = 1;
+	// Lite: the biggest textures lose a second level too (PG_LITE_BIG_MIP_SKIP=N: at least N×N texels).
+	if (t->skip && gSkipTopMip && gLiteBigSkip && (uint64_t)w * h >= gLiteBigSkip && mips >= 3 && (w >> 2) >= 4 && (h >> 2) >= 4) {
+		t->skip = 2;
+	}
 	MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
 	desc.pixelFormat = m.format;
 	desc.width = std::max(1u, w >> t->skip); desc.height = std::max(1u, t->height >> t->skip);
@@ -579,6 +670,7 @@ static void createTexture(const uint32_t *p) {
 		}
 		gTextureStats.gpuBytes += (int64_t)t->gpuBytes;
 		if (t->skip) gTextureStats.halfSize++;
+		if (t->skip > 1) gTextureStats.quarterSize++;
 		if (t->bcKind && getenv("PG_TRACE_BC_FORMATS")) logOnce("bcdxgi" + std::to_string(dxgi), "Metal renderer [trace]: BC texture format DXGI %u (first %ux%u)", dxgi, w, h);
 		if (t->bcKind) { gTextureStats.bcGameBytes += (int64_t)t->bcGameBytes; gTextureStats.bcGpuBytes += (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] += (int64_t)t->gpuBytes; }
 	}
@@ -803,7 +895,9 @@ static void uploadTextureInner(const uint32_t *p) {
 static void createBuffer(const uint32_t *p) {
 	auto *b = new Buffer(p[0]);
 	b->size = p[1]; b->bind = p[2]; b->misc = p[3]; b->stride = p[4];
-	if (b->bind & BIND_CB) { b->shadow.assign(b->size, 0); gBufferStats.cbCount++; gBufferStats.cbBytes += b->size; }
+	// A constant buffer's CPU copy is made on its first write (GTA-174): in a city drive 3,118 of 3,220 were never
+	// written, and an unwritten one binds the zero buffer, which holds what it would (zeros, at most 64 KB).
+	if (b->bind & BIND_CB) gBufferStats.cbCount++;
 	if ((b->bind & (BIND_VB | BIND_IB | BIND_SRV | BIND_UAV)) || (b->misc & 0x10)) {
 		b->bytes = std::max(4u, (b->size + 3) & ~3u);
 		static int slabs = -1;
@@ -811,7 +905,7 @@ static void createBuffer(const uint32_t *p) {
 		int32_t slab; uint32_t off;
 		// Only plain vertex/index buffers: no shader or compute access, no special flags.
 		bool mesh = (b->bind & (BIND_VB | BIND_IB)) && !(b->bind & ~(BIND_VB | BIND_IB)) && !b->misc;
-		if (slabs && mesh && b->bytes <= kSlabLargest && slabAllocate(b->bytes, slab, off)) { b->buf = gSlabs[slab].buf; b->base = off; b->slab = slab; }
+		if (slabs && mesh && b->bytes <= slabLargest() && slabAllocate(b->bytes, slab, off)) { b->buf = gSlabs[slab].buf; b->base = off; b->slab = slab; }
 		else b->buf = [R->device newBufferWithLength:b->bytes options:MTLResourceStorageModeShared];
 		if (b->buf) {
 			b->counted = b->bytes;
@@ -823,13 +917,17 @@ static void createBuffer(const uint32_t *p) {
 	R->objs.set(p[0], b);
 }
 
+// Times each vertex or index buffer was written (the ped spike check below runs again after a rewrite).
+static std::unordered_map<uint32_t, uint32_t> gMeshWrites;
 static void uploadBuffer(const uint32_t *p, bool noOverwrite) {
 	Buffer *b = buffer(p[0]);
 	if (!b) return;
+	if (b->bind & (BIND_VB | BIND_IB)) gMeshWrites[p[0]]++;
 	uint32_t offset = p[1], size = p[2];
 	const uint8_t *data = (const uint8_t *)(p + 3);
 	if (b->meshPages) { PGMeshForget(b->meshPage, b->meshPages, 0); b->meshPages = 0; }		// rewritten: the engine's bytes go back first
-	if (!b->shadow.empty() && offset < b->shadow.size()) {
+	if ((b->bind & BIND_CB) && offset < b->size) {
+		if (b->shadow.empty()) { b->shadow.assign(b->size, 0); gBufferStats.cbBytes += b->size; }
 		memcpy(b->shadow.data() + offset, data, std::min<size_t>(size, b->shadow.size() - offset));
 		b->cbFrame = UINT64_MAX; if (!b->version++) gBufferStats.cbWritten++;
 	}
@@ -1632,6 +1730,100 @@ static bool minimapMaskSwap(Shader *&vs, Shader *&ps) {
 	return true;
 }
 
+// ---- game-data workaround: stray vertices in ped models (GTA-78) ------------------------------------------------------
+// Some of the game's ped clothing models have a vertex far from where it belongs: g_m_y_famca_01's letterman jacket
+// (torso drawable 0) has vertex 449 0.85 m below its neighbours, which share its bones and weights. Drawn as is, it pulls
+// its triangles into a long spike out of the jacket, standing or lying dead. On the PC the HD ped models ("+hi") replace
+// these near the camera; the game files here have none ("Ped HD assets for 'G_M_Y_FamCA_01+hi' not found"), so the
+// standard model is drawn up close too. The engine's own copy of the model holds the same vertex, so it is the data, not
+// the skinning or the shader translation: CPU skinning of the draw lands it at the spike's pixels.
+// The first time a ped model's index range is drawn with a bone-skinned ped shader (b4: 255 bones), each vertex is
+// compared with the vertices it shares a triangle with. A vertex is moved to the middle of its neighbours when all of
+// them are more than 0.5 m away from it, they lie within 0.4 times that distance of each other, and one of them has
+// the same main bone. No real part of a ped's mesh looks like that (a strap or hair card has a near neighbour along
+// its length); across 54 ped models in two outfits each, only that jacket vertex matched. Only the GPU copy changes.
+// PG_PED_SPIKE_FIX=0 draws the models as they are.
+static void fixPedSpikes(Shader *vs, Layout *lay, const uint32_t *p) {
+	static int on = -1;
+	if (on < 0) on = !(getenv("PG_PED_SPIKE_FIX") && !strcmp(getenv("PG_PED_SPIKE_FIX"), "0"));
+	if (!on || !vs || !vs->info || !lay || p[0] >= 4 || !(p[0] & 1) || R->topo != 4) return;		// indexed triangle lists only
+	if (vs->info->label.find("Ped") == std::string::npos) return;
+	bool bones = false, cloth = false;
+	for (auto &b : vs->info->res) if (b.kind == RUbo) { bones |= b.binding == 4 && b.size == 12240; cloth |= b.binding == 11 && b.size == 4128; }
+	if (!bones || cloth) return;		// cloth models place their simulated vertices from b11, not from these positions
+	const LayoutEl *pe = nullptr, *ie = nullptr, *we = nullptr;
+	for (auto &e : lay->els) {
+		if (e.idx) continue;
+		if (e.sem == 2013849738u) pe = &e;		// POSITION (FNV-1a of the semantic name)
+		else if (e.sem == 307084293u) ie = &e;		// BLENDINDICES
+		else if (e.sem == 3650812920u) we = &e;		// BLENDWEIGHT
+	}
+	if (!pe || !ie || !we || pe->fmt != 6 || pe->slot != ie->slot || pe->slot != we->slot) return;
+	const auto &v = R->vb[pe->slot];
+	Buffer *vb = buffer(v.buf), *ib = buffer(R->ib.buf);
+	if (!vb || !vb->buf || !ib || !ib->buf || !v.stride) return;
+	const uint32_t count = p[1], start = p[3];
+	const int32_t baseVertex = (int32_t)p[4];
+	static std::unordered_set<uint64_t> checked;
+	uint64_t key = fnv(fnv(fnv(fnv(fnv(fnv(1469598103934665603ull, v.buf), gMeshWrites[v.buf]), R->ib.buf), gMeshWrites[R->ib.buf]), R->ib.offset + (uint64_t)start * (R->ib.fmt == 57 ? 2 : 4)), count);
+	key = fnv(fnv(key, (uint32_t)baseVertex), v.offset);
+	if (checked.size() > 200000) checked.clear();
+	if (!checked.insert(key).second) return;
+	const uint32_t isz = R->ib.fmt == 57 ? 2 : 4;
+	if (R->ib.offset + ((uint64_t)start + count) * isz > ib->bytes) return;
+	const uint8_t *indices = (const uint8_t *)ib->buf.contents + ib->base + R->ib.offset + (size_t)start * isz;
+	uint8_t *verts = (uint8_t *)vb->buf.contents + vb->base + v.offset;
+	const uint64_t avail = vb->bytes > v.offset ? vb->bytes - v.offset : 0;
+	auto vertexAt = [&](uint32_t i) -> int64_t {
+		int64_t x = (int64_t)(isz == 2 ? ((const uint16_t *)indices)[i] : ((const uint32_t *)indices)[i]) + baseVertex;
+		return x >= 0 && (uint64_t)x * v.stride + pe->offset + 12 <= avail && (uint64_t)x * v.stride + std::max(ie->offset, we->offset) + 4 <= avail ? x : -1;
+	};
+	auto pos = [&](uint32_t x) { return (float *)(verts + (size_t)x * v.stride + pe->offset); };
+	auto mainBone = [&](uint32_t x) {
+		const uint8_t *w = verts + (size_t)x * v.stride + we->offset, *b = verts + (size_t)x * v.stride + ie->offset;
+		int best = 0;
+		for (int k = 1; k < 4; k++) if (w[k] > w[best]) best = k;
+		return b[best];		// UNORM8 x4 or BGRA: the same byte holds a weight and its bone
+	};
+	if ((ie->fmt != 28 && ie->fmt != 87) || we->fmt != ie->fmt) return;
+	std::unordered_map<uint32_t, std::vector<uint32_t>> nbrs;
+	for (uint32_t t = 0; t + 2 < count; t += 3) {
+		int64_t a = vertexAt(t), b = vertexAt(t + 1), c = vertexAt(t + 2);
+		if (a < 0 || b < 0 || c < 0) return;
+		uint32_t tri[3] = {(uint32_t)a, (uint32_t)b, (uint32_t)c};
+		for (int k = 0; k < 3; k++) for (int j = 1; j < 3; j++) {
+			auto &n = nbrs[tri[k]];
+			uint32_t o = tri[(k + j) % 3];
+			if (o != tri[k] && std::find(n.begin(), n.end(), o) == n.end()) n.push_back(o);
+		}
+	}
+	auto dist = [](const float *a, const float *b) { float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2]; return std::sqrt(x * x + y * y + z * z); };
+	std::vector<std::pair<uint32_t, std::array<float, 3>>> moves;
+	for (auto &kv : nbrs) {
+		const std::vector<uint32_t> &n = kv.second;
+		if (n.size() < 2) continue;
+		const float *me = pos(kv.first);
+		float nearest = 1e30f, spread = 0;
+		bool sameBone = false;
+		const uint8_t bone = mainBone(kv.first);
+		for (size_t i = 0; i < n.size(); i++) {
+			nearest = std::min(nearest, dist(me, pos(n[i])));
+			sameBone |= mainBone(n[i]) == bone;
+			for (size_t j = i + 1; j < n.size(); j++) spread = std::max(spread, dist(pos(n[i]), pos(n[j])));
+		}
+		if (!(nearest > 0.5f) || !(spread < 0.4f * nearest) || !sameBone || !(nearest < 100.0f)) continue;
+		std::array<float, 3> mid = {0, 0, 0};
+		for (uint32_t o : n) for (int k = 0; k < 3; k++) mid[k] += pos(o)[k] / n.size();
+		moves.push_back({kv.first, mid});
+	}
+	for (auto &m : moves) {
+		float *q = pos(m.first);
+		logf("Metal renderer: ped model (%s, vertex buffer %u): vertex %u was %.2f m from the vertices it shares triangles with, which all lie close together; moved to them (GTA-78)",
+		     vs->info->label.c_str(), v.buf, m.first, dist(q, m.second.data()));
+		memcpy(q, m.second.data(), 12);
+	}
+}
+
 static void drawInner(const uint32_t *p) {
 	uint32_t kind = p[0], count = p[1], inst = p[2], start = p[3], startInstance = p[5];
 	int32_t baseVertex = (int32_t)p[4];
@@ -1660,8 +1852,22 @@ static void drawInner(const uint32_t *p) {
 	}
 	if (!pipe->ready.load(std::memory_order_acquire)) { drawOutcome = "SKIP-pending"; R->pendingSkips++; R->skipped++; R->pipeDirty = true; return; }
 	if (!pipe->state) { drawOutcome = "SKIP-pipefail"; R->skipped++; R->skipReasons[3]++; return; }
+	if (R->activeOcclusion) {
+		R->activeOcclusion->draws++;
+		// PG_OQ_TRACE=1 (GTA-176): the first 40 draws inside occlusion queries, to see why almost all count no sample.
+		static int trace = -1, traced = 0;
+		if (trace < 0) trace = getenv("PG_OQ_TRACE") && atoi(getenv("PG_OQ_TRACE"));
+		if (trace && traced < 40) {
+			traced++;
+			State *ds = state(R->dssId); const uint32_t *w = ds && ds->words.size() >= 13 ? ds->words.data() : nullptr;
+			logf("[metal] occlusion draw %d: query type %u slot %d, pass depth %u (read-only %d) %ux%u x%u samples, colors %u; depth test %u write %u func %u; stencil %u func %u ref %u mask %x",
+			     traced, R->activeOcclusion->type, R->passSlot, (unsigned)R->passInfo.depth, R->passInfo.roDepth ? 1 : 0, R->passInfo.width, R->passInfo.height,
+			     R->passInfo.samples, R->passInfo.colorCount, w ? w[0] : 0, w ? w[1] : 0, w ? w[2] : 0, w ? w[3] : 0, w ? w[5 + 3] : 0, R->dssRef, w ? w[4] : 0);
+		}
+	}
 	if (pipe->state != R->appliedPipe) { [R->pass setRenderPipelineState:pipe->state]; R->appliedPipe = pipe->state; }
 	applyDynamicState();
+	fixPedSpikes(vs, lay, p);
 	bindStage(0, vs->info);
 	if (ps) bindStage(1, ps->info);
 	if (pipe->zeroStream) setBuffer(0, R->zeroBuffer, 0, kZeroVertexBuffer);
@@ -2169,6 +2375,11 @@ static void present(uint32_t texId) {
 		std::string name;
 		{ std::lock_guard<std::mutex> g(R->captureLock); name.swap(R->captureName); }
 		if (!name.empty()) capture(t, name);
+		{
+			std::string burst;
+			{ std::lock_guard<std::mutex> g(R->captureLock); if (R->burstLeft > 0) { R->burstLeft--; char n[160]; snprintf(n, sizeof n, "%s-%03d", R->burstName.c_str(), R->burstIndex++); burst = n; } }
+			if (!burst.empty()) capture(t, burst);
+		}
 		id<MTLTexture> picture = upscaled(t) ?: t->tex;
 		CGSize size = CGSizeMake(picture.width, picture.height);
 		if (!CGSizeEqualToSize(R->layer.drawableSize, size)) R->layer.drawableSize = size;
@@ -2312,6 +2523,7 @@ static void destroyObject(uint32_t oid) {
 	if (o->kind == OQuery) for (auto &pq : R->pendingQueries) if (pq.q == o) pq.q = nullptr;
 	if (o->kind == OShader) { Shader *s = (Shader *)o; auto it = s->info ? R->shaderObjects.find(s->info) : R->shaderObjects.end(); if (it != R->shaderObjects.end() && it->second == oid) R->shaderObjects.erase(it); }
 	if (o->kind == OBuffer || o->kind == OLayout || o->kind == OState || o->kind == OShader) R->pipeDirty = true;
+	if (o->kind == OBuffer) gMeshWrites.erase(oid);
 	if (gTraceHeld > 0) gHeld.erase(oid);
 	R->objs.erase(oid);
 }
@@ -2446,7 +2658,7 @@ static void execute(uint32_t op, const uint32_t *p, uint32_t n) {
 	case BEGIN_QUERY: {
 		Query *q = R->objs.as<Query>(p[0], OQuery);
 		if (!q || !(q->type == 1 || q->type == 5)) break;
-		q->slots.clear();
+		q->slots.clear(); q->draws = 0;
 		R->activeOcclusion = q;
 		beginOcclusionInPass();
 		break;
@@ -2455,7 +2667,10 @@ static void execute(uint32_t op, const uint32_t *p, uint32_t n) {
 		Query *q = R->objs.as<Query>(p[0], OQuery);
 		if (!q) break;
 		q->seq = p[1];
-		if (q->type == 1 || q->type == 5) { if (R->activeOcclusion == q) { endOcclusionInPass(); R->activeOcclusion = nullptr; } }
+		if (q->type == 1 || q->type == 5) {
+			if (R->activeOcclusion == q) { endOcclusionInPass(); R->activeOcclusion = nullptr; }
+			gQueriesEnded++; if (q->slots.empty()) gQueriesNoPass++; if (!q->draws) gQueriesNoDraw++; gQueryDraws += q->draws;
+		}
 		R->pendingQueries.push_back({q, p[1], q->slots, q->type, q->addr});
 		q->slots.clear();
 		break;
@@ -2509,11 +2724,24 @@ static void report() {
 	                                    convertMicros / 1000.0, (unsigned long long)converts, convertSpan / 1000, convertMicros / 1000.0 / convertSpan);
 	uint64_t ring = 0, ringBig = 0;
 	for (auto &f : R->frames) { ring += f.chunks.size() * FrameRing::CHUNK; for (id<MTLBuffer> b : f.big) ringBig += b.length; }
+	{
+		static uint64_t lastResults, lastZero, lastFlips;
+		uint64_t results = gOcclusionResults.load(), zero = gOcclusionZero.load(), flips = gOcclusionFlips.load();
+		static uint64_t lastLate, lastReads;
+		uint64_t late = PGOcclusionLate(), reads = PGOcclusionReads();
+		if (results > lastResults) logf("[metal] occlusion: %llu answers, %.0f%% hidden, %llu flips between visible and hidden; the game read %llu, %llu not answered yet (GTA-176)",
+		                                (unsigned long long)(results - lastResults), 100.0 * (zero - lastZero) / (results - lastResults), (unsigned long long)(flips - lastFlips),
+		                                (unsigned long long)(reads - lastReads), (unsigned long long)(late - lastLate));
+		lastResults = results; lastZero = zero; lastFlips = flips; lastLate = late; lastReads = reads;
+		if (gQueriesEnded) logf("[metal] occlusion queries: %llu ended, %llu without a pass, %llu with no draw, %llu draws in them",
+		                        (unsigned long long)gQueriesEnded, (unsigned long long)gQueriesNoPass, (unsigned long long)gQueriesNoDraw, (unsigned long long)gQueryDraws);
+		gQueriesEnded = gQueriesNoPass = gQueriesNoDraw = gQueryDraws = 0;
+	}
 	logf("[metal] constant buffers: %lld (%.0f MB on the CPU), %lld ever written", (long long)gBufferStats.cbCount.load(), gBufferStats.cbBytes / MB, (long long)gBufferStats.cbWritten.load());
 	logf("[metal] buffers: %lld (%.0f MB, %.0f MB in whole pages), meshes %lld (%.0f MB), %zu slabs; frame ring %.0f MB + %.0f MB large",
 	     (long long)gBufferStats.count.load(), gBufferStats.bytes / MB, gBufferStats.pages / MB, (long long)gBufferStats.meshCount.load(),
-	     gBufferStats.meshBytes / MB, gSlabs.size(), ring / MB, ringBig / MB);
-	if (gSkipTopMip || gSkipBigTopMip) logf("[metal] %s: %lld textures without their largest level; %llu copies or readbacks needed one", gSkipTopMip ? "Lite" : "Big textures", (long long)gTextureStats.halfSize.load(), (unsigned long long)gTextureStats.missingLevel.load());
+	     gBufferStats.meshBytes / MB, (size_t)std::count_if(gSlabs.begin(), gSlabs.end(), [](const Slab &x) { return x.buf != nil; }), ring / MB, ringBig / MB);
+	if (gSkipTopMip || gSkipBigTopMip) logf("[metal] %s: %lld textures without their largest level (%lld without two); %llu copies or readbacks needed one", gSkipTopMip ? "Lite" : "Big textures", (long long)gTextureStats.halfSize.load(), (long long)gTextureStats.quarterSize.load(), (unsigned long long)gTextureStats.missingLevel.load());
 	memset(R->commitReasons, 0, sizeof R->commitReasons); memset(R->skipReasons, 0, sizeof R->skipReasons);
 	R->statT = now; R->statDraws = R->draws; R->statPresents = R->presents; R->statSkips = R->skipped; R->statPending = R->pendingSkips; R->statCommits = R->commits; R->busyMs = 0;
 }
@@ -2614,7 +2842,13 @@ static bool setup() {
 	// Textures of at least 512×512 texels lose their largest level where BC is decoded, a quarter of their
 	// memory (GTA-122; simulator: GPU textures −16%).
 	// On by default since v1.4.3 at 512×512 (Kevin, 2026-10-20); PG_BIG_MIP_SKIP=0 turns it off, another size changes it.
+	// Fixed-camera close-ups (Harness/scenarios/texture_closeup.py, Quality at 900p, 2026-10-24): GPU textures 1,304 MB
+	// off, 1,122 at 1024, 941 at 512, 765 at 256. Road, sign and car look the same down to 512; a face at 1 m is a little
+	// softer at 512 zoomed in; 256 visibly softens the pavement, so 512 stays.
 	{ const char *v = getenv("PG_BIG_MIP_SKIP"); long side = v ? atol(v) : 512; if (side >= 256 && side <= 8192 && !gNativeBC) gSkipBigTopMip = (uint64_t)side * side; }
+	// Lite: textures of at least N×N texels (the game's size) lose their second level too, where BC is decoded
+	// (PG_LITE_BIG_MIP_SKIP=N, GTA-148; the app sets 512 below a 2,600 MB limit, GraphicsOptions.swift).
+	{ const char *v = getenv("PG_LITE_BIG_MIP_SKIP"); long side = v ? atol(v) : 0; if (gSkipTopMip && side >= 256 && side <= 8192 && !gNativeBC) gLiteBigSkip = (uint64_t)side * side; }
 	R->borderColors = [R->device supportsFamily:MTLGPUFamilyApple7];
 	if (!loadShaderLibrary(R->device)) return false;
 	R->zeroBuffer = [R->device newBufferWithLength:65536 options:MTLResourceStorageModeShared];
@@ -2656,6 +2890,7 @@ static bool setup() {
 	     R->borderColors ? "yes" : "no", gNativeBC ? "native" : gASTCBC3 ? "decoded on the CPU (BC1 and BC3 as ASTC)" : gASTCBC1 ? "decoded on the CPU (BC1 as ASTC)" : gPackedBC1 ? "decoded on the CPU (BC1 as 16-bit)" : "decoded on the CPU");
 	if (gSkipTopMip) logf("Metal renderer: Lite: the game's textures go to the GPU without their largest level.");
 	else if (gSkipBigTopMip) logf("Metal renderer: textures of %llu texels or more go to the GPU without their largest level (PG_BIG_MIP_SKIP).", (unsigned long long)gSkipBigTopMip);
+	if (gLiteBigSkip) logf("Metal renderer: Lite: textures of %llu texels or more go to the GPU without their two largest levels (PG_LITE_BIG_MIP_SKIP).", (unsigned long long)gLiteBigSkip);
 	return true;
 }
 
@@ -2712,6 +2947,12 @@ extern "C" double PGMetalRendererFPS(void) {
 	return last && CACurrentMediaTime() - last < 1.5 ? R->fps.load() : 0;
 }
 
+// The next `frames` presented pictures as NativeFrames/<name>-000.png and on (debug channel "burst", GTA-176).
+extern "C" void PGMetalRendererBurst(const char *name, int frames) {
+	if (!R) return;
+	std::lock_guard<std::mutex> g(R->captureLock);
+	R->burstName = name; R->burstIndex = 0; R->burstLeft = frames < 0 ? 0 : frames > 300 ? 300 : frames;
+}
 extern "C" void PGMetalRendererCapture(const char *name) {
 	if (!R) return;
 	std::lock_guard<std::mutex> g(R->captureLock);

@@ -13,6 +13,9 @@ void PGMetalRendererCapture(const char *name);
 void PGMetalRendererSetUpscaling(int on);
 // Each picture stays on screen at least this long (0: as the frame limiter allows). 1/40 s gives an even 40 FPS on a 120 Hz screen.
 void PGMetalRendererSetPresentInterval(double seconds);
+// Pictures shown on screen since the last call (GTA-200): per second, the fastest 5% and the median gap between two, and
+// how many never showed.
+void PGMetalRendererShownStats(double *perSecond, double *fastGapMs, double *medianGapMs, uint32_t *notShown);
 #ifdef __cplusplus
 }
 #endif

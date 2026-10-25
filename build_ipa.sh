@@ -38,10 +38,19 @@ fi
 /usr/libexec/PlistBuddy -c "Set :PGDefaultAssetServer $SERVER" App/Info.plist
 /usr/libexec/PlistBuddy -c "Set :PGLiteMode $LITE" App/Info.plist
 
+# Optional profile-guided optimization (GTA-172): PG_PGO_PROFILE is an .profdata from Scripts/pgo.sh, PG_ORDER_FILE a
+# list of hot functions the linker places together. Without them the build is as before.
+PGO_CFLAGS=""; PGO_LDFLAGS=""
+if [ -n "${PG_PGO_PROFILE:-}" ]; then
+  PGO_CFLAGS="-fprofile-instr-use=$PG_PGO_PROFILE -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-profile-instr-mismatch"
+  echo "Profile-guided optimization with $PG_PGO_PROFILE"
+fi
+[ -n "${PG_ORDER_FILE:-}" ] && PGO_LDFLAGS="-Wl,-order_file,$PG_ORDER_FILE"
 xcodebuild -project PlayGTA5Native.xcodeproj -scheme PlayGTA5Native \
   -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
   -derivedDataPath Build/Release -jobs "$JOBS" \
   GCC_OPTIMIZATION_LEVEL=2 SWIFT_OPTIMIZATION_LEVEL=-O DEBUG_INFORMATION_FORMAT=dwarf \
+  OTHER_CFLAGS="\$(inherited) $PGO_CFLAGS" OTHER_LDFLAGS="\$(inherited) $PGO_LDFLAGS" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGN_ENTITLEMENTS="$ENTITLEMENTS" build > Build/xcodebuild.log 2>&1 || {
   grep -E 'error:' Build/xcodebuild.log | head -20
   echo "Build failed; the full log is app/Build/xcodebuild.log"; exit 1; }

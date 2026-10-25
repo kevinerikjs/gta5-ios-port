@@ -62,10 +62,13 @@ struct GraphicsDetail {
         let percent = ["0", "0.2", "0.4", "0.6", "0.8", "1"]
         return [
             GraphicsDetail(option: "textureQuality", title: AppLanguage.choose("Textures"), values: ["0", "1", "2"], names: levels),
+            // Shaders never below High: the low shader set is mostly missing.
+            GraphicsDetail(option: "shaderQuality", title: AppLanguage.choose("Shaders"), values: ["1", "2"], names: Array(levels.dropFirst())),
             GraphicsDetail(option: "shadowQuality", title: AppLanguage.choose("Shadows"), values: ["-1", "0", "1", "2"], names: [AppLanguage.choose("Off")] + levels),
             GraphicsDetail(option: "reflectionQuality", title: AppLanguage.choose("Reflections"), values: ["0", "1", "2"], names: levels),
             GraphicsDetail(option: "lodScale", title: AppLanguage.choose("Draw distance"), values: percent, names: percent.map { "\(Int((Double($0) ?? 0) * 100))%" }),
             GraphicsDetail(option: "grassQuality", title: AppLanguage.choose("Grass"), values: ["0", "1", "2"], names: levels),
+            GraphicsDetail(option: "particleQuality", title: AppLanguage.choose("Particles"), values: ["0", "1", "2"], names: levels),
             GraphicsDetail(option: "cityDensity", title: AppLanguage.choose("Traffic and people"), values: percent, names: percent.map { "\(Int((Double($0) ?? 0) * 100))%" }),
         ]
     }()
@@ -74,7 +77,12 @@ struct GraphicsDetail {
     func presetValue(_ preset: GraphicsPreset) -> String {
         preset.engineOptions.first { $0.hasPrefix("-\(option)=") }.map { String($0.dropFirst(option.count + 2)) } ?? values[0]
     }
-    func name(of value: String) -> String { values.firstIndex(of: value).map { names[$0] } ?? value }
+    /// A value from the game's pause menu can lie between the choices here (GTA-166): a percentage is shown as one.
+    func name(of value: String) -> String {
+        if let index = values.firstIndex(of: value) { return names[index] }
+        if names.allSatisfy({ $0.hasSuffix("%") }), let number = Double(value) { return "\(Int((number * 100).rounded()))%" }
+        return value
+    }
 }
 
 /// What this device can afford, measured before the engine starts.
@@ -128,8 +136,19 @@ struct DeviceTier {
     /// The Metal renderer needs about 700 MB less than the old renderer did: a 6 GB phone on a
     /// free Apple ID (about 3 GB limit) runs Battery with room to spare.
     var recommended: GraphicsPreset {
-        GraphicsPreset.liteAvailable && memoryLimitMB < 2600 ? .lite : memoryLimitMB < 3400 ? .battery : memoryLimitMB < 4600 ? .performance : memoryLimitMB < 6000 ? .balanced : memoryLimitMB < 8000 ? .quality : .ultra
+        let byMemory: GraphicsPreset = GraphicsPreset.liteAvailable && memoryLimitMB < 2600 ? .lite : memoryLimitMB < 3400 ? .battery : memoryLimitMB < 4600 ? .performance : memoryLimitMB < 6000 ? .balanced : memoryLimitMB < 8000 ? .quality : .ultra
+        guard var ceiling = Self.heatCeiling[model] else { return byMemory }
+        if ceiling == .lite && !GraphicsPreset.liteAvailable { ceiling = .battery }
+        return byMemory.rawValue > ceiling.rawValue ? ceiling : byMemory
     }
+    /// The highest preset recommended on phones that often reach thermal "critical" (where iOS slows the chip
+    /// hard), from play stats of 2026-10-20 to 23, sessions of 3 minutes or more (GTA-175):
+    /// - iPhone 12 Pro Max: 50% of sessions reached critical on Battery and 52% on Performance, 18% on Ultra
+    ///   Performance, which also averaged more FPS (31.2 against 28.9). Rendering fewer pixels (Battery) didn't
+    ///   help; Ultra Performance's shorter range cuts the world's CPU and memory work, where the heat comes from.
+    /// - iPhone 12 Pro: 26% on Performance, 14% on Battery (and 15% on Ultra Performance), so Battery at most.
+    /// Their 4 GB siblings already get Ultra Performance from the memory rule.
+    static let heatCeiling: [String: GraphicsPreset] = ["iPhone13,4": .lite, "iPhone13,3": .battery]
     /// Every preset can be chosen; those above the recommended one show a warning.
     var allowed: [GraphicsPreset] { GraphicsPreset.available }
     /// Presets shown with a warning because they may run out of memory or heat up.
@@ -213,9 +232,16 @@ enum GraphicsConfiguration {
         // just loaded isn't evicted for 4 s (GTA-148; This device › Experimental turns it off). Simulator, 2,098 MB,
         // a 4.8 km drive scored against the same drive without a limit: detail 0.4 was closest in all four runs;
         // 0.5 and 0.35 had runs worse than today, and without the 4 s the files were re-read 4-5 times as much.
+        // On iPhones that decode BC textures (A13-A15), textures of 512×512 or more also lose their second level there
+        // (GTA-148; the renderer skips it where the GPU reads BC). Lab simulator, 2,348 MB, BC decoded, the same 4.8 km
+        // drive, 6 runs each: the guard held streaming in 4-23% of the 10 s intervals instead of 47-95%, files re-read
+        // 241-274 MB per interval instead of 272-351, for 15-20 MB less texture memory. "Lighter big textures" in This
+        // device › Experimental turns it off along with the other big-texture cut.
         // Switches already set (tests) win.
         if preset == .lite || Theme.isLite, settings.tier.memoryLimitMB < 2600, settings.steadyCityLowMemory {
-            for (name, value) in [("PG_LITE_LOD", "0.4"), ("PG_LITE_DENSITY", "0.25"), ("PG_EVICT_PROTECT_MS", "4000")] where getenv(name) == nil {
+            var values = [("PG_LITE_LOD", "0.4"), ("PG_LITE_DENSITY", "0.25"), ("PG_EVICT_PROTECT_MS", "4000")]
+            if settings.lighterBigTextures { values.append(("PG_LITE_BIG_MIP_SKIP", "512")) }
+            for (name, value) in values where getenv(name) == nil {
                 setenv(name, value, 1)
             }
         }

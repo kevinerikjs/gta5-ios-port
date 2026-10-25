@@ -76,10 +76,61 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         mark.append(NSAttributedString(string: " "))
         return mark
     }()
+    /// The buttons that will be on screen (GTA-197), before the first frame of play decides it (pollController).
+    private func expectedHUDContext() -> HUDTouchContext {
+        #if targetEnvironment(macCatalyst)
+        return .controller
+        #else
+        // As pollController decides: a touch-controls preview keeps them on screen unless a test controller is asked for.
+        let arguments = ProcessInfo.processInfo.arguments
+        var controller = !GCController.controllers().isEmpty && !arguments.contains("--touch-controls-preview")
+        #if targetEnvironment(simulator)
+        if arguments.contains("--test-controller") { controller = true }
+        #endif
+        if controller && GameSettings.shared.hideTouchWithController { return .controller }
+        return GameSettings.shared.touchScheme == .controller ? .pad : .situational
+        #endif
+    }
+    /// The HUD layout editor opened by the debug channel closed (GTA-197 tests).
+    func debugHUDLayoutChanged() { placeFPSLabel() }
+    private lazy var fpsAtLeft = fpsLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12)
+    /// A place the player chose in Settings › HUD layout (GTA-196): two guides from the safe area's top left, as wide and
+    /// high as that fraction of the room the safe area leaves around the label.
+    private let fpsRoomX = UILayoutGuide(), fpsRoomY = UILayoutGuide()
+    private var fpsCustom: [NSLayoutConstraint] = []
+    /// Help messages show at the top left this run (the game reads their place when it starts).
+    private var helpTopLeft = true
     private func placeFPSLabel() {
-        let bottom = GameSettings.shared.minimapAtTop
-        fpsAtTop.isActive = !bottom
-        fpsAtBottom.isActive = bottom
+        NSLayoutConstraint.deactivate(fpsCustom)
+        fpsCustom = []
+        if fpsRoomX.owningView == nil { view.addLayoutGuide(fpsRoomX); view.addLayoutGuide(fpsRoomY) }
+        let safe = view.safeAreaLayoutGuide, size = HUDGeometry.fpsSize(lowMemory: lowMemoryDevice)
+        guard let place = GameSettings.shared.fpsPlace else {
+            // Its own place: the top left, or the bottom left when the minimap is at the top. With touch controls on
+            // screen, lower down on the left, so a help message at the top left starts clear of it (GTA-197).
+            let bottom = GameSettings.shared.minimapAtTop
+            let lower = bottom ? nil : HUDGeometry.fpsDefaultDrop(GameSettings.hudContext, helpTopLeft: helpTopLeft)
+            fpsAtLeft.isActive = true
+            fpsAtTop.isActive = !bottom && lower == nil
+            fpsAtBottom.isActive = bottom
+            if let lower {
+                fpsCustom = [fpsRoomY.topAnchor.constraint(equalTo: safe.topAnchor),
+                             fpsRoomY.heightAnchor.constraint(equalTo: safe.heightAnchor, multiplier: lower),
+                             fpsLabel.topAnchor.constraint(equalTo: fpsRoomY.bottomAnchor)]
+                NSLayoutConstraint.activate(fpsCustom)
+            }
+            return
+        }
+        NSLayoutConstraint.deactivate([fpsAtLeft, fpsAtTop, fpsAtBottom])
+        fpsCustom = [
+            fpsRoomX.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            fpsRoomX.widthAnchor.constraint(equalTo: safe.widthAnchor, multiplier: place.x, constant: -place.x * size.width),
+            fpsRoomY.topAnchor.constraint(equalTo: safe.topAnchor),
+            fpsRoomY.heightAnchor.constraint(equalTo: safe.heightAnchor, multiplier: place.y, constant: -place.y * size.height),
+            fpsLabel.leadingAnchor.constraint(equalTo: fpsRoomX.trailingAnchor),
+            fpsLabel.topAnchor.constraint(equalTo: fpsRoomY.bottomAnchor),
+        ]
+        NSLayoutConstraint.activate(fpsCustom)
     }
     private let inputTestLabel = UILabel()
     private var wasMouseSwipeActive = false
@@ -132,9 +183,15 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var metrics: [String: String] = [:]
     private var logFile: URL?
     private let touchControls = TouchControlsView(frame: .zero)
+    /// Settings › Touch scheme › Controller buttons (GTA-195): every controller button on screen, under the touch layer.
+    private let controllerPad = ControllerPadView(frame: .zero)
     private let modKeys = ModKeysView(frame: .zero)
     private let gyro = GyroInput()
     private var engineStarted = false
+    /// The app was in the background at least once since it opened (the log's "App back in the foreground.").
+    private var wasInBackground = false
+    /// leftApp ran for the current time away (reset when the app is active again).
+    private var leftAppHandled = false
     private let playStats = PlayStats()
     private var bootedPreset = GameSettings.shared.graphicsPreset
     private var bootedMode: GameMode?
@@ -174,12 +231,62 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             updateDisplayRate()
         }
     }
-    /// ProMotion screens only run above 60 Hz when the app asks: "Unlocked" asks for up to 120, and so does 40 FPS
-    /// (every third refresh of 120 Hz).
+    /// The refresh rate the game asks of the screen (GTA-200). Core Animation picks a ProMotion screen's rate: inside the
+    /// display link's range it picks what suits it, and it lifts the screen to 120 Hz while a finger is on the glass. Touch
+    /// players got 120 Hz that way, but a controller player never touches the screen, so with the old range (60 to 120, or
+    /// the system default) the screen could stay at 60 or 80 Hz and the game could show no more pictures than that. Each
+    /// frame rate now asks for one fixed rate, the same with touch or a controller:
+    /// - Unlocked, 40 and 60 FPS: the screen's top rate (120 on ProMotion). 40 FPS is every third refresh of 120 Hz, and
+    ///   the engine's 60 FPS limiter runs at 62-63 FPS, which a 60 Hz screen would hold back with pictures queued (input lag).
+    /// - 30 FPS, and 30 when "Steady frame rate when hot" steps down: 60 Hz, which shows 30 evenly without the cost of 120.
+    ///   Also 60 Hz while the game is on a TV: the phone's screen then shows only the controls.
+    /// Low Power Mode, Limit Frame Rate and a hot device still cap the screen; the system lowers the rate then.
+    /// PG_DISPLAY_RATE_OLD=1 (tests only) keeps the request of v1.4, for a before/after on one build.
     private func updateDisplayRate() {
         let cap = GameSettings.shared.frameRateCap
-        let top = Float(UIScreen.main.maximumFramesPerSecond)
-        displayLink?.preferredFrameRateRange = cap == 0 || cap == 40 ? CAFrameRateRange(minimum: min(60, top), maximum: top, preferred: top) : .default
+        let top = Float((view.window?.windowScene?.screen ?? UIScreen.main).maximumFramesPerSecond)   // the screen the game is on
+        let environment = ProcessInfo.processInfo.environment
+        let range: CAFrameRateRange
+        if environment["PG_DISPLAY_RATE_OLD"] == "1" {
+            range = cap == 0 || cap == 40 ? CAFrameRateRange(minimum: min(60, top), maximum: top, preferred: top) : .default
+        } else {
+            // What the engine runs at now: a benchmark's own limit, the hot-device step-down, or the player's choice.
+            var limit = GameSettings.engineFrameLimit(cap), interval = GameSettings.presentInterval(cap)
+            if environment["PG_BENCHMARK"] != nil {
+                limit = Int32(environment["PG_BENCHMARK_FRAME_LIMIT"] ?? "") ?? 0; interval = 0
+            } else if thermalFrameLimit >= 0 {
+                limit = thermalFrameLimit; interval = thermalPresentInterval
+            }
+            // With the game on a TV the phone's screen shows only the controls: 60 Hz is plenty there.
+            let rate = limit >= 2 && interval == 0 || tvWindow != nil ? min(60, top) : top
+            range = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        }
+        displayLink?.preferredFrameRateRange = range
+        let asked = range.maximum == 0 ? "the system default" : range.minimum == range.maximum ? "\(Int(range.maximum)) Hz" : "\(Int(range.minimum))-\(Int(range.maximum)) Hz"
+        if asked != askedDisplayRate {
+            askedDisplayRate = asked
+            appendLog("Display: asks the screen for \(asked) (frame rate \(GameSettings.frameRateTitle(cap)), screen up to \(Int(top)) Hz).")
+        }
+    }
+    private var askedDisplayRate = ""
+    /// Display link calls since the last Display line, and the rate its latest call was for (GTA-200).
+    private var displayLinkCalls = 0, displayLinkSince = CACurrentMediaTime(), displayLinkHz = 0.0
+    /// Every 10 s with the Health line (GTA-200): the rate asked, the display link's rate, how many pictures reached the
+    /// screen and the gaps between them, and whether a finger touched the screen or a controller is connected.
+    private func logDisplay() {
+        var shown = 0.0, fastGap = 0.0, medianGap = 0.0, notShown: UInt32 = 0
+        PGShownFrameStats(&shown, &fastGap, &medianGap, &notShown)
+        let now = CACurrentMediaTime()
+        let calls = Double(displayLinkCalls) / max(0.001, now - displayLinkSince)
+        displayLinkCalls = 0; displayLinkSince = now
+        let touched = now - GameWindow.lastTouch < 10
+        #if targetEnvironment(simulator)
+        let controller = GCController.controllers().contains { $0.extendedGamepad != nil } || ProcessInfo.processInfo.arguments.contains("--test-controller")
+        #else
+        let controller = GCController.controllers().contains { $0.extendedGamepad != nil }
+        #endif
+        appendLog(String(format: "Display: asked %@ · display link %.0f Hz, %.0f calls/s · shown %.0f FPS, gaps %.1f ms fastest 5%%, %.1f ms median, %u not shown · touch %@ · controller %@",
+                         askedDisplayRate, displayLinkHz, calls, shown, fastGap, medianGap, notShown, touched ? "yes" : "no", controller ? "yes" : "no"))
     }
     private var lastHealth: [UInt64] = [0, 0, 0, 0, 0, 0, 0, 0]
     private var padProof: PGPadState?
@@ -199,14 +306,19 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var proofController: GCController?
     private var proofInputSamples = 0
     private var proofInputActive = false
-    #if targetEnvironment(simulator)
-    private var simulatorKeys = Set<UIKeyboardHIDUsage>()
+    #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
     /// The debug channel (DebugChannel.swift): its controller input, held until a time; the last pad sample sent.
+    /// On the Mac only with PG_DEBUG_PORT set (GTA-176: tests on a real Mac without driving its mouse).
     private var debugPad = PGPadState(), debugPadUntil: CFTimeInterval = 0
     private(set) var debugLastPad = PGPadState()
-    var debugTouchControls: TouchControlsView { touchControls }
+    var debugTouchControls: DebugTouchSurface { controllerPad.isHidden ? touchControls : controllerPad }
     func debugPressPlay() { launchButton.sendActions(for: .touchUpInside) }
+    /// The stop panel's mod button (GTA-178): pressed; its title after.
+    func debugPressStopFix() -> String? { stopFixButton?.sendActions(for: .primaryActionTriggered); return stopFixButton?.configuration?.title }
     func debugHold(_ pad: PGPadState, for seconds: Double) { debugPad = pad; debugPadUntil = CACurrentMediaTime() + seconds }
+    #endif
+    #if targetEnvironment(simulator)
+    private var simulatorKeys = Set<UIKeyboardHIDUsage>()
     override var canBecomeFirstResponder: Bool { true }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -250,7 +362,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         guard engineStarted, macGameSize != .zero, size != macGameSize else { return }
         macResize?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.view.bounds.size != self.macGameSize else { return }
+            // Not while the app is inactive: quitting from fullscreen shrinks the window first, and the device restore
+            // that resize starts, with the pause menu opening, stopped the game during the quit (GTA-171, GTA-89).
+            guard let self, self.view.bounds.size != self.macGameSize, UIApplication.shared.applicationState == .active else { return }
             self.macGameSize = self.view.bounds.size
             self.applyLiveResolution()
         }
@@ -335,6 +449,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     #endif
 
     override var prefersStatusBarHidden: Bool { true }
+    // iOS 27.1's vertical bar (preferredVerticalBarBehavior) stays automatic: turning it off put a horizontal status
+    // bar's space at the top of the iPhone Duo's outer screen, although the status bar is hidden (GTA-185).
     /// While playing with a mouse (iPad), the pointer is captured so moving it looks around.
     override var prefersPointerLocked: Bool { engineStarted && GameSettings.shared.keyboardMouse && KeyboardMouse.shared.hasMouse }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
@@ -437,6 +553,13 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             self.setNeedsUpdateOfPrefersPointerLocked()
         }
         view.addSubview(touchControls)
+        // Under the touch layer, which keeps only Settings and Mods while this scheme is on (GTA-195).
+        controllerPad.frame = view.bounds
+        controllerPad.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        controllerPad.isHidden = true
+        controllerPad.inputChanged = { [weak self] in self?.pollController() }
+        controllerPad.overlay = touchControls
+        view.insertSubview(controllerPad, belowSubview: touchControls)
         // Script mods asking for typed text (a car to spawn by name, a search) get the iPhone keyboard.
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.checkModTextRequest() }
         // Script mods' keys (shows itself only while a script mod runs), above the touch controls.
@@ -475,7 +598,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             touchControls.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         NSLayoutConstraint.activate([
-            fpsLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            fpsAtLeft,
             fpsAtTop,
             fpsLabel.widthAnchor.constraint(equalToConstant: lowMemoryDevice ? 84 : 68),
             fpsLabel.heightAnchor.constraint(equalToConstant: 24),
@@ -544,6 +667,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         displayLink?.add(to: .main, forMode: .common)
         #if targetEnvironment(simulator)
         DebugChannel.shared.start(self)
+        #elseif targetEnvironment(macCatalyst)
+        if ProcessInfo.processInfo.environment["PG_DEBUG_PORT"] != nil { DebugChannel.shared.start(self) }
         #endif
         observeExternalDisplays()
         NotificationCenter.default.addObserver(self, selector: #selector(controllerChanged), name: .GCControllerDidDisconnect, object: nil)
@@ -557,10 +682,18 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         // The log says when the app was in the background, so measurements and stalls can be told apart.
         // An end while the game runs in the foreground is a stop (GTA-159); leaving the app first is not.
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in RunEnd.playing(false) }
-        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in RunEnd.playing(self?.engineStarted == true) }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            RunEnd.playing(self?.engineStarted == true); self?.leftAppHandled = false
+        }
         for (name, label) in [(UIApplication.willResignActiveNotification, "inactive"), (UIApplication.didEnterBackgroundNotification, "in the background"),
                               (UIApplication.willEnterForegroundNotification, "back in the foreground"), (UIApplication.didBecomeActiveNotification, "active")] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.appendLog("App \(label).") }
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                if name == UIApplication.didEnterBackgroundNotification { self.wasInBackground = true }
+                // With scenes (GTA-171) iOS also says "will enter foreground" as the app opens; only a return counts.
+                if name == UIApplication.willEnterForegroundNotification && !self.wasInBackground { return }
+                self.appendLog("App \(label).")
+            }
         }
         // A newer release on GitHub: say so once per version, pointing to the Telegram group.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -598,10 +731,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         if ProcessInfo.processInfo.arguments.contains("--open-layout-editor") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.showLayoutEditor() }
         }
-        if ProcessInfo.processInfo.arguments.contains("--open-help-text-editor") {
+        if ProcessInfo.processInfo.arguments.contains("--open-help-text-editor") || ProcessInfo.processInfo.arguments.contains("--open-hud-layout") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                let editor = HelpTextEditorController()
-                editor.modalPresentationStyle = .fullScreen
+                let editor = HUDLayoutEditorController(select: ProcessInfo.processInfo.arguments.contains("--open-help-text-editor") ? .helpText : nil)
+                editor.onDone = { [weak self] in self?.placeFPSLabel() }
                 self.present(editor, animated: false)
             }
         }
@@ -640,6 +773,14 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
 
     private func handleLine(_ line: String, written: Bool, show: Bool) {
         playStats.line(line)
+        // Why the game stops (GTA-178): the lines StopCause reads, kept for the stop panel.
+        if line.hasPrefix("Fatal Error:") || line.hasPrefix("Native trap functions:") {
+            stopEvidence.append(line)
+            if stopEvidence.count > 12 { stopEvidence.removeFirst() }
+        } else if line.hasPrefix("Executing changeset ") {
+            stopEvidence.removeAll { $0.hasPrefix("Executing changeset ") }
+            stopEvidence.append(line)
+        }
         if line.hasPrefix("ASSET_WARM_PROGRESS ") {
             let parts = line.split(separator: " ")
             if parts.count >= 3 {
@@ -674,6 +815,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             NotificationCenter.default.addObserver(self, selector: #selector(thermalChanged), name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
             thermalChanged()
         }
+        if line.hasPrefix("Pause menu graphics for the next start") { keepPauseMenuGraphics(line) }
         if line == "WORLD_READY" { RunEnd.testCrashIfAsked() }
         if line == "WORLD_READY", stableTimer == nil {
             // Three minutes in the world counts as a launch that fits in memory.
@@ -830,6 +972,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         setNeedsUpdateOfPrefersPointerLocked()   // the pointer lock depends on engineStarted
         #if targetEnvironment(macCatalyst)
         macGameSize = view.bounds.size
+        #else
+        phoneGameSize = view.bounds.size; followedSize = phoneGameSize
         #endif
         ModInstaller.gameRunning = true
         playStats.gameStarting(GameSettings.shared.gameMode, sandboxMap: GameSettings.shared.sandboxMap)
@@ -840,17 +984,24 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         PGSetStartMode(testMap ? 3 : Int32(mode.rawValue))
         let minimap = GameSettings.shared.minimapLayout
         PGSetMinimapLayout(minimap.dx, minimap.dy, minimap.scale)
+        // The buttons on screen decide the help messages' own place (GTA-197): know them before the game reads it.
+        GameSettings.hudContext = expectedHUDContext()
         let help = GameSettings.shared.helpTextLayout
         PGSetHelpTextLayout(help.x, help.y, help.scale)
+        helpTopLeft = help == (0, 0, 1)
         PGSetSubtitleRaise(GameSettings.shared.subtitlesAboveHomeBar ? 0.05 : 0)
+        GameSettings.shared.applyHUDLayout()
         TouchControlsView.minimapLayout = minimap
         placeFPSLabel()
         appendLog("Game mode: \(mode.title)\(mode == .sandbox ? " on " + GameSettings.sandboxMapTitles[GameSettings.shared.sandboxMap] : "")")
         bootedPreset = GameSettings.shared.graphicsPreset
         // A TV already connected gets the picture from the start, in its own shape.
-        let tvScreen = ProcessInfo.processInfo.arguments.contains("--no-tv") ? nil : UIScreen.screens.first(where: { $0 != UIScreen.main })
+        let tvScreen = ProcessInfo.processInfo.arguments.contains("--no-tv") ? nil : TVSceneDelegate.scene?.screen
         appendLog("Graphics: " + GraphicsConfiguration.apply(GameSettings.shared, screen: tvScreen?.bounds.size ?? view.bounds.size, tv: tvScreen != nil))
         appendLog("Device: " + GameSettings.shared.tier.summary)
+        // Which screen the game starts on and what the system keeps clear on it (the iPhone Duo's two screens, GTA-185).
+        let insets = view.safeAreaInsets
+        appendLog("Screen: \(Int(view.bounds.width))×\(Int(view.bounds.height)) points at \(Int(view.window?.windowScene?.screen.scale ?? 0))x, safe area insets top \(Int(insets.top)), left \(Int(insets.left)), bottom \(Int(insets.bottom)), right \(Int(insets.right)).")
         GameSettings.shared.markBootStarted()
         playIntro()
         launchButton.setTitle(AppLanguage.choose("Loading…"), for: .disabled); launchButton.setNeedsUpdateConfiguration()
@@ -1127,24 +1278,129 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
 
     @objc private func controllerChanged() { pollController() }
 
+    // MARK: Folding (iPhone Duo) and other screen size changes
+
+    #if !targetEnvironment(macCatalyst)
+    /// Folding or unfolding the iPhone Duo moves the game to its other screen (outer 678×466 points, inner 951×669;
+    /// GTA-185), so the game screen changes size while the game runs. A live back-buffer resize stops some runs on
+    /// iPhone (GTA-89), so the picture follows without one: it keeps its render size and fills the new screen when its
+    /// shape is within 4% of the one the game started on (the Duo's two screens differ by 2.3%); past that (another
+    /// window size) it keeps its shape with bars. The next start renders in the new screen's shape.
+    private var phoneGameSize = CGSize.zero, followedSize = CGSize.zero
+    private var phoneResize: DispatchWorkItem?
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard engineStarted, phoneGameSize != .zero, view.bounds.size != followedSize else { return }
+        phoneResize?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.followScreenSize() }
+        phoneResize = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)   // once the change settles
+    }
+    private func followScreenSize() {
+        let size = view.bounds.size
+        guard size != followedSize, size.width > 0, size.height > 0 else { return }
+        let before = followedSize
+        followedSize = size
+        updateDisplayRate()
+        let keepShape = abs((size.width / size.height) / (phoneGameSize.width / phoneGameSize.height) - 1) > 0.04
+        if tvWindow == nil { metalView.layer.contentsGravity = keepShape ? .resizeAspect : .resize }
+        appendLog("Screen: \(Int(size.width))×\(Int(size.height)) points (was \(Int(before.width))×\(Int(before.height))). The picture "
+                  + (tvWindow != nil ? "is on the TV." : keepShape ? "keeps its shape with bars until the next start." : "fills it at its render size."))
+    }
+
+    /// iOS 27: a display link that moves with the window's scene to the screen it's on (the Duo's inner or outer
+    /// screen). A plain CADisplayLink stays on the main screen, and the controls are read on its ticks.
+    private weak var displayLinkScene: UIWindowScene?
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        followSceneWithDisplayLink()
+    }
+    private func followSceneWithDisplayLink() {
+        guard #available(iOS 27, *), let scene = view.window?.windowScene, scene !== displayLinkScene else { return }
+        var link: CADisplayLink?
+        #if compiler(>=6.4)   // the iOS 27 SDK (Xcode 27)
+        link = scene.displayLink(target: self, selector: #selector(pollController))
+        #else
+        // Built with an older SDK (Xcode 26.2, the release toolchain): the same iOS 27 call, looked up by name.
+        typealias Make = @convention(c) (AnyObject, Selector, AnyObject, Selector) -> Unmanaged<CADisplayLink>?
+        let make = NSSelectorFromString("displayLinkWithTarget:selector:")
+        if scene.responds(to: make) {
+            link = unsafeBitCast(scene.method(for: make), to: Make.self)(scene, make, self, #selector(pollController))?.takeUnretainedValue()
+        }
+        #endif
+        guard let link else { appendLog("Display link: the scene's could not be made; the main screen's stays."); return }
+        displayLink?.invalidate()
+        displayLink = link
+        displayLinkScene = scene
+        updateDisplayRate()
+        link.add(to: .main, forMode: .common)
+        appendLog("Display link: follows the game's scene to the screen it's on (iOS 27).")
+    }
+    #endif
+
     // MARK: TV (AirPlay and HDMI)
 
     /// With a TV connected (AirPlay screen mirroring or an HDMI adapter), the game picture goes to the TV
-    /// during play and the phone keeps the touch controls over black (GTA-3).
+    /// during play and the phone keeps the touch controls over black (GTA-3). The TV comes as its own scene
+    /// (TVSceneDelegate, GTA-171); before Play the app gives it no window, so it shows the phone's screen.
     private var tvWindow: UIWindow?
     private var phoneGameConstraints: [NSLayoutConstraint] = []
     private func observeExternalDisplays() {
         let center = NotificationCenter.default
-        center.addObserver(forName: UIScreen.didConnectNotification, object: nil, queue: .main) { [weak self] _ in self?.updateExternalDisplay() }
-        center.addObserver(forName: UIScreen.didDisconnectNotification, object: nil, queue: .main) { [weak self] _ in self?.updateExternalDisplay() }
-        center.addObserver(forName: UIScreen.modeDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.updateExternalDisplay() }
+        center.addObserver(forName: TVSceneDelegate.changed, object: nil, queue: .main) { [weak self] _ in self?.externalDisplayChanged() }
+        center.addObserver(forName: UIScreen.modeDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.externalDisplayChanged() }
+        #if !targetEnvironment(macCatalyst)
+        registerTVAccessory()
+        #endif
     }
+    /// A TV's scene can connect, drop and connect again within a moment (the iOS 27 simulator did), and each move of
+    /// the picture resizes the game live (risky on iPhone, GTA-89): the picture moves once the TV has settled.
+    private var tvSettle: DispatchWorkItem?
+    private func externalDisplayChanged() {
+        tvSettle?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.updateExternalDisplay() }
+        tvSettle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+    #if !targetEnvironment(macCatalyst)
+    /// iOS 27 connects a TV's scene only for a screen that registered it as a scene accessory (UISceneAccessory);
+    /// iOS 16 to 26 connect it from Info.plist's scene manifest. Kept for the app's life; the registration is the
+    /// UISceneAccessoryRegistration.
+    private var tvAccessory: NSObject?
+    private func registerTVAccessory() {
+        guard tvAccessory == nil, #available(iOS 27, *) else { return }
+        let configuration = UISceneConfiguration(name: TVSceneDelegate.configurationName, sessionRole: .windowExternalDisplayNonInteractive)
+        #if compiler(>=6.4)   // the iOS 27 SDK (Xcode 27)
+        tvAccessory = registerSceneAccessory(.externalNonInteractive(sceneConfiguration: configuration))
+        #else
+        // Built with an older SDK (Xcode 26.2, the release toolchain): the same iOS 27 calls, looked up by name.
+        let make = NSSelectorFromString("externalNonInteractiveSceneAccessoryWithConfiguration:"), register = NSSelectorFromString("registerSceneAccessory:")
+        guard let type = NSClassFromString("UISceneAccessory") as? NSObject.Type, type.responds(to: make), responds(to: register),
+              let accessory = type.perform(make, with: configuration)?.takeUnretainedValue() else {
+            appendLog("TV: iOS 27 without UISceneAccessory; a TV shows the phone's screen.")
+            return
+        }
+        tvAccessory = perform(register, with: accessory)?.takeUnretainedValue() as? NSObject
+        #endif
+        guard let tvAccessory else { appendLog("TV: the scene accessory could not be registered; a TV shows the phone's screen."); return }
+        // Read "available" only if this iOS has it: an unknown key raises and would stop the app at launch.
+        let readable = tvAccessory.responds(to: NSSelectorFromString("isAvailable")) || tvAccessory.responds(to: NSSelectorFromString("available"))
+        let state = readable ? ((tvAccessory.value(forKey: "available") as? Bool) == true ? "connected" : "not connected") : "unknown"
+        appendLog("TV: scene accessory registered (a TV is \(state)).")
+    }
+    #endif
     private func updateExternalDisplay(resize: Bool = true) {
-        let tv = engineStarted && !ProcessInfo.processInfo.arguments.contains("--no-tv") ? UIScreen.screens.first(where: { $0 != UIScreen.main }) : nil
-        if let tv {
-            if tvWindow?.screen === tv, tvWindow?.bounds == tv.bounds { return }
-            let window = tvWindow ?? UIWindow(frame: tv.bounds)
-            window.screen = tv
+        var resize = resize
+        let scene = engineStarted && !ProcessInfo.processInfo.arguments.contains("--no-tv") ? TVSceneDelegate.scene : nil
+        if let scene {
+            let tv = scene.screen
+            if tvWindow?.windowScene === scene, tvWindow?.bounds == tv.bounds { return }
+            // A TV connected again is a new scene: the old one's window goes (the picture keeps its size if the TV's is the same).
+            if let old = tvWindow, old.windowScene !== scene {
+                if old.bounds == tv.bounds { resize = false }
+                old.isHidden = true; old.rootViewController = nil; tvWindow = nil
+            }
+            let window = tvWindow ?? UIWindow(windowScene: scene)
             window.frame = tv.bounds
             if window.rootViewController == nil {
                 let root = UIViewController()
@@ -1173,6 +1429,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             tvWindow = nil
             appendLog("TV disconnected: the game is back on the phone.")
         } else { return }
+        updateDisplayRate()   // the phone's screen only shows the controls while the game is on the TV
         if resize { applyLiveResolution() }
     }
 
@@ -1368,6 +1625,29 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         navigation.modalPresentationStyle = .fullScreen
         present(navigation, animated: true)
     }
+    /// "Restart now?" in the game's own pause menu (Settings › Graphics there) froze the game: the port can't restart
+    /// it (GTA-166). The engine now logs the graphics the player chose that the app passes at launch
+    /// (EngineHost.c, pg_settings_restart: "Pause menu graphics for the next start (GTA-166): textureQuality=2 ...").
+    /// They become the player's own details in Settings › Graphics (a value equal to the preset's follows the preset
+    /// again) and apply the next time the game starts.
+    private func keepPauseMenuGraphics(_ line: String) {
+        guard let colon = line.firstIndex(of: ":") else { return }
+        let preset = GameSettings.shared.graphicsPreset
+        var overrides = GameSettings.shared.graphicsOverrides
+        var kept: [String] = []
+        for pair in line[line.index(after: colon)...].split(separator: " ") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let option = preset.engineOptions.first(where: { $0.hasPrefix("-\(parts[0])=") }) else { continue }
+            let presetValue = String(option.dropFirst(parts[0].count + 2))
+            overrides[parts[0]] = Double(parts[1]) == Double(presetValue) ? nil : parts[1]
+            kept.append(pair.description)
+        }
+        GameSettings.shared.graphicsOverrides = overrides
+        appendLog("Graphics: the pause menu asked to restart the game; " + (kept.isEmpty ? "nothing the app sets changed." : "kept for the next start: " + kept.joined(separator: ", ") + "."))
+        showWhenFree(title: AppLanguage.choose("Graphics"), message: kept.isEmpty
+            ? AppLanguage.choose("The game can't restart itself here, and this change has no effect on this device. Set the graphics in Settings › Graphics.")
+            : AppLanguage.choose("The game can't restart itself here, so these changes apply the next time you start the game. They're saved in Settings › Graphics."))
+    }
     /// Shows a message once nothing else (like the closing folder picker) is on screen; iOS drops
     /// alerts presented during another presentation.
     private func showWhenFree(title: String, message: String, attempt: Int = 0) {
@@ -1507,15 +1787,21 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             if mission != lastStoryMission { lastStoryMission = mission; appendLog("Story: \(mission.isEmpty ? "no mission running" : "mission \(mission) running")") }
             if replay != lastReplayState { if replay == 1 { appendLog("Story: Mission failed screen") }; lastReplayState = replay }
         }
-        playStats.health(fps: Double(PGRenderedFramesPerSecond()), thermal: ProcessInfo.processInfo.thermalState.rawValue, mission: story ? String(cString: name) : nil, failedScreen: replay == 1)
+        playStats.health(fps: Double(PGRenderedFramesPerSecond()), thermal: ProcessInfo.processInfo.thermalState.rawValue, mission: story ? String(cString: name) : nil, failedScreen: replay == 1,
+                         controller: GCController.controllers().contains { $0.extendedGamepad != nil })
         appendLog(String(format: "Health: memory %d MB used, %d MB free · guard stopped streaming growth %llu×, asked to evict %llu× · reads %llu (%.1f MB, avg %.1f ms, slow %llu, errors %llu) · %.0f FPS · thermal %@ · CPU %.2f cores · GPU %.1f ms · streaming %llu waiting (%llu over 10 s), loaded %llu (median %llu ms, 95%% %llu ms), unloaded %llu · at %.0f, %.0f, %.0f",
                          used, free, d[0], d[7], d[1], Double(d[2]) / 1_048_576, avgMS, d[5], d[3], PGRenderedFramesPerSecond(), thermal, cores, gpuMS, stream[0], stream[1], stream[2], stream[3], stream[4], stream[5], position.0, position.1, position.2))
         // Which threads use those cores (GTA-162): the heat question per part of the game, not just in total.
         var threads = [CChar](repeating: 0, count: 600)
         if PGThreadCPU(&threads, threads.count) > 0 { appendLog(String(cString: threads)) }
+        logDisplay()
     }
 
     @objc private func leftApp() {
+        // Once per time away: with scenes (GTA-171) a Mac app that quits goes to the background first and then
+        // terminates, and a second session end would add an empty session to the play stats.
+        guard !leftAppHandled else { return }
+        leftAppHandled = true
         RunEnd.playing(false)
         if stableTimer?.isValid != false { GameSettings.shared.markBootInterrupted() }
         playStats.sessionEnded()
@@ -1542,18 +1828,31 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     }
 
     private var stoppedPanel: UIView?
-    /// Shown once the engine has stopped: what happened, Send log and Settings, above everything.
+    private var stopEvidence: [String] = []
+    private weak var stopFixButton: UIButton?
+    /// Shown once the engine has stopped: what happened, Send log and Settings, above everything. For a known cause
+    /// (StopCause, GTA-178) it says which and what to do, and offers to switch off the mod behind it.
     private func showEngineStopped(title titleText: String? = nil, message: String? = nil) {
         guard stoppedPanel == nil else { return }
         touchControls.reset(publish: false)
         touchControls.isHidden = true
         PGUpdateVirtualPad(PGPadState())
+        let modsOn = !ModGuard.startsWithoutMods && ModGuard.anyModsOn
+        let cause = titleText == nil ? StopCause.find(stopEvidence, addonsOn: modsOn) : nil
+        let suspects = cause.map { ModFiles.mods(for: $0) } ?? []
+        if let cause {
+            appendLog("Stop cause: \(cause.kind.rawValue)" + (cause.file.isEmpty ? "" : " file \(cause.file)") + (cause.pack.isEmpty ? "" : " pack \(cause.pack)")
+                      + (suspects.isEmpty ? "" : " mods " + suspects.map(\.name).joined(separator: ", ")))
+        }
         let title = UILabel()
-        title.text = titleText ?? AppLanguage.choose("The game stopped")
+        title.text = titleText ?? cause?.title ?? AppLanguage.choose("The game stopped")
         title.font = Theme.display(22, .heavy)
         title.textColor = .white
+        title.numberOfLines = 0
+        title.textAlignment = .center
         let info = UILabel()
-        info.text = message ?? AppLanguage.choose("Please send the log so this can be fixed, then close the app and open it again to keep playing.")
+        info.text = message ?? cause.map { $0.message(mods: suspects.map(\.name)) }
+            ?? AppLanguage.choose("Please send the log so this can be fixed, then close the app and open it again to keep playing.")
         info.numberOfLines = 0
         info.textAlignment = .center
         info.font = .preferredFont(forTextStyle: .subheadline)
@@ -1565,8 +1864,35 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         var settingsStyle = UIButton.Configuration.gray()
         settingsStyle.title = AppLanguage.choose("Settings")
         settingsStyle.cornerStyle = .large
+        settingsStyle.baseForegroundColor = .white	// the dark panel made the default label nearly invisible
+        settingsStyle.baseBackgroundColor = UIColor(white: 1, alpha: 0.18)
         let settings = UIButton(configuration: settingsStyle, primaryAction: UIAction { [weak self] _ in self?.showSettings() })
-        let stack = UIStackView(arrangedSubviews: [title, info, send, settings])
+        var buttons = [send, settings]
+        // The mod behind it: switched off for the next start (the game is still running its files now).
+        if let cause, cause.fromMods || !suspects.isEmpty, modsOn {
+            var style = UIButton.Configuration.filled()
+            style.baseBackgroundColor = .systemOrange
+            style.cornerStyle = .large
+            let one = suspects.count == 1 ? suspects.first : nil
+            style.title = one.map { AppLanguage.interpolate(AppLanguage.choose("Switch off \"{arg0}\""), [$0.name]) } ?? AppLanguage.choose("Start without mods next time")
+            let fix = UIButton(configuration: style)
+            fix.addAction(UIAction { [weak self, weak fix] _ in
+                if let one { try? ModInstaller.setEnabled(one, false) } else { ModGuard.withoutModsNextStart = true }
+                // Done: a plain, readable label (a disabled button's text is too faint on the dark panel).
+                var done = UIButton.Configuration.plain()
+                done.title = one != nil ? AppLanguage.choose("Switched off: open the app again to play")
+                    : AppLanguage.choose("The next start is without mods: open the app again")
+                done.baseForegroundColor = .systemOrange
+                done.image = UIImage(systemName: "checkmark.circle.fill")
+                done.imagePadding = 6
+                fix?.configuration = done
+                fix?.isUserInteractionEnabled = false
+                self?.appendLog(one.map { "Stop panel: \($0.name) switched off for the next start." } ?? "Stop panel: the next start is without mods.")
+            }, for: .primaryActionTriggered)
+            buttons.insert(fix, at: 0)
+            stopFixButton = fix
+        }
+        let stack = UIStackView(arrangedSubviews: [title, info] + buttons)
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 14
@@ -1600,9 +1926,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         guard presentedViewController == nil else { return }
         let screen = SendLogViewController()
         screen.finished = { [weak self] title, message in
-            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: AppLanguage.choose("OK"), style: .default))
-            self?.present(alert, animated: true)
+            self?.present(LogUploader.resultAlert(title, message), animated: true)
         }
         let navigation = UINavigationController(rootViewController: screen)
         navigation.modalPresentationStyle = .fullScreen
@@ -1616,6 +1940,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private func showSettings() {
         guard presentedViewController == nil else { return }
         touchControls.reset()
+        controllerPad.reset()
         pauseGame(reason: "Settings opened during play")
         let controller = SettingsHomeViewController(engineRunning: engineStarted, runningMode: bootedMode)
         controller.gameModeChanged = { [weak self] in self?.refreshModeChoice() }
@@ -1624,7 +1949,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             if SettingsViewController.liveResolution { self.applyLiveResolution() }
             else if self.engineStarted { self.appendLog("Graphics: resolution changed in Settings during play; it applies the next time the game starts (GTA-89).") }
         }
-        controller.controlsChanged = { [weak self] in self?.touchControls.updateVisibility() }
+        controller.controlsChanged = { [weak self] in self?.touchControls.updateVisibility(); self?.placeFPSLabel() }
         controller.editLayout = { [weak self] in self?.showLayoutEditor() }
         controller.targetingChanged = { PGSetTargetingMode(Int32(GameSettings.shared.targetingMode)) }
         controller.cheatSelected = { [weak self] cheat in self?.playStoryCheat(cheat) }
@@ -1729,6 +2054,10 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         let (width, height) = GraphicsConfiguration.size(for: bootedPreset, renderHeight: settings.renderHeight, screen: surface, matchScreenShape: tvWindow != nil || settings.matchScreenShape)
         PGSetBackBufferSize(Int32(width), Int32(height))
         appendLog("Graphics: live resize to \(width)×\(height)")
+        #if !targetEnvironment(macCatalyst)
+        // Back on the phone (a TV went away): the picture has the phone screen's shape again.
+        if tvWindow == nil { phoneGameSize = view.bounds.size; followedSize = phoneGameSize; metalView.layer.contentsGravity = .resize }
+        #endif
     }
     @objc private func releaseTouchControls() {
         touchControls.reset(publish: false)
@@ -1800,6 +2129,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             return
         }
         let now = CACurrentMediaTime()
+        if let link = displayLink, link.targetTimestamp > link.timestamp { displayLinkCalls += 1; displayLinkHz = 1 / (link.targetTimestamp - link.timestamp) }
         if now - lastFPSLabelUpdate >= 0.25 {
             if touchControlsAvailable { fpsLabel.isHidden = !GameSettings.shared.showFPS }
             let fps = PGRenderedFramesPerSecond()
@@ -1818,8 +2148,16 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         let gameStatus = PGGameStatus()
         // A long respawn or story load looked like a freeze (GTA-50): say it's loading.
         let loading = engineStarted && PGLoadSceneSeconds() >= 3 && gameStatus & 1 != 0 && gameStatus & 16 == 0
-        if loading == loadingPill.isHidden {
-            loadingPill.isHidden = !loading
+        // A script mod starting up over several frames slows the game (Menyoo reads its lists for about 10 s): say which
+        // one is loading, so it doesn't look like a hang (GTA-209).
+        let busyMod = engineStarted && !loading ? PGAsiBusyModName().map { String(cString: $0) } : nil
+        let pillText = busyMod.map { name in
+            AppLanguage.interpolate(AppLanguage.choose("Loading {arg0}…"), [name.lowercased().hasSuffix(".asi") ? String(name.dropLast(4)) : name])
+        } ?? AppLanguage.choose("Loading…")
+        if loadingPill.text != pillText { loadingPill.text = pillText }
+        let showPill = loading || busyMod != nil
+        if showPill == loadingPill.isHidden {
+            loadingPill.isHidden = !showPill
             if loadingPill.superview == nil {
                 view.addSubview(loadingPill)
                 NSLayoutConstraint.activate([loadingPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -1869,9 +2207,12 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         // features (assisted aim, analog steering and throttle) apply.
         var state = PGPadState()
         var hasController = false
+        // One look-up per tick (the radio wheel below uses the same pad).
+        var connectedPad: GCExtendedGamepad?
         if let controller = GCController.controllers().first(where: { $0.extendedGamepad != nil }), let pad = controller.extendedGamepad {
             state = PGPadState(gamepad: pad)
             hasController = true
+            connectedPad = pad
             // The touch Settings button hides while a controller is connected, so holding View / Share (Select)
             // for a second opens the app's Settings; players used to disconnect the controller to get there.
             if engineStarted, pad.buttonOptions?.isPressed == true {
@@ -1908,6 +2249,14 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             controllerLabel.text = AppLanguage.choose("Touch controls ready")
             #endif
         }
+        // Test: --test-controller acts as if a controller were connected (the controller-only layout, GTA-146), also
+        // with the harness's --touch-controls-preview.
+        #if targetEnvironment(simulator)
+        let testController = ProcessInfo.processInfo.arguments.contains("--test-controller")
+        if testController { hasController = true }
+        #else
+        let testController = false
+        #endif
         // With a controller connected the touch controls step aside (Settings › Touch controls).
         // Keyboard and mouse: every frame while the game runs (keys go straight to the game as they change).
         let keyboardMouse = GameSettings.shared.keyboardMouse
@@ -1916,8 +2265,23 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         if let ready = worldReadyAt { injectTestInput(sinceWorld: now - ready) }
         let pcControls = keyboardMouse && KeyboardMouse.shared.hasKeyboard && KeyboardMouse.shared.hasMouse
         let previewing = ProcessInfo.processInfo.arguments.contains("--touch-controls-preview")
-        let touchActive = touchControlsAvailable && stoppedPanel == nil && (previewing || !((hasController || pcControls) && GameSettings.shared.hideTouchWithController))
-        touchControls.isHidden = !touchActive
+        let controllerHides = (!previewing || testController) && (hasController || pcControls) && GameSettings.shared.hideTouchWithController
+        // Touch scheme Controller buttons (GTA-195): the controller pad plays, the situational layer keeps Settings and Mods.
+        let padScheme = GameSettings.shared.touchScheme == .controller
+        let padActive = touchControlsAvailable && stoppedPanel == nil && !controllerHides && padScheme
+        controllerPad.isHidden = !padActive
+        let touchActive = touchControlsAvailable && stoppedPanel == nil && !controllerHides && !padScheme
+        // With a controller the touch layer keeps only Settings and Mods (GTA-146); the game reads no touch pad then.
+        touchControls.controllerOnly = controllerHides || padScheme
+        touchControls.padScheme = padScheme && !controllerHides
+        touchControls.isHidden = !(touchControlsAvailable && stoppedPanel == nil)
+        // The wheel's, the phone's and the FPS counter's own places follow the buttons on screen (GTA-197).
+        let hudContext: HUDTouchContext = controllerHides ? .controller : padScheme ? .pad : .situational
+        if hudContext != GameSettings.hudContext {
+            GameSettings.hudContext = hudContext
+            if engineStarted { GameSettings.shared.applyHUDLayout() }
+            placeFPSLabel()
+        }
         var vehicle = touchActive ? PGCurrentTouchContext() : 0
         var pauseMenu = PGPauseMenuActive()
         // Debug: --preview-context <vehicle type + 1 | menu> to review a layout.
@@ -1933,7 +2297,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             var status = gameStatus
             if arguments.contains("--preview-prompt") { status |= 1 }
             if arguments.contains("--preview-phone") { status |= 2 }
-            touchControls.characterSwitchEnabled = bootedMode == .story || arguments.contains("--preview-switch")
+            // Story mode and Sandbox both switch characters (GTA-199).
+            touchControls.characterSwitchEnabled = bootedMode != nil || arguments.contains("--preview-switch")
             touchControls.updateGameState(status)
             touchControls.updateContext(vehicle: vehicle, pauseMenu: pauseMenu)
             var hints = PGReadControlHints(vehicle)
@@ -1948,7 +2313,12 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             touchControls.updateHints(hints)
             // Debug: --preview-mission-inputs shows every mission button.
             let previewMission = arguments.contains("--preview-mission-inputs")
-            touchControls.updateMissionInputs { previewMission || PGInputPolledWithin($0, 700) != 0 }
+            // The script inputs (INPUT_SCRIPT_*, 222-235) count when a script reads them in any way: Eye in the Sky's
+            // scan reads RT with IS_CONTROL_PRESSED, which reads the input itself, so the poll check never saw it and the
+            // RT button showed only while the help named it (GTA-163). Other inputs keep the poll check: scripts read
+            // the play inputs that way all the time.
+            // A script screen that reads the frontend D-pad every frame (the ATM, GTA-202) gets the menu layout too.
+            touchControls.updateMissionInputs(read: { PGInputReadWithin($0, 250) != 0 }) { previewMission || PGInputPolledWithin($0, 700) != 0 || ((222...235).contains($0) && PGInputReadWithin($0, 700) != 0) }
             // Deliberately let the native game decide if relative mouse motion
             // disables assisted targeting. Never force the last-device flag.
             var mouseSwipe = touchControls.experimentalMouseLookActive && !hasController && !pcControls
@@ -1976,6 +2346,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             }
             state.merge(touch)
         }
+        if padActive { state.merge(controllerPad.padState()) }
         #if targetEnvironment(simulator)
         var keys = PGPadState()
         func held(_ key: UIKeyboardHIDUsage) -> Float { simulatorKeys.contains(key) ? 1 : 0 }
@@ -1997,6 +2368,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         }
         keys.padButtons = keyButtons
         state.merge(keys)
+        #endif
+        #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
         if now < debugPadUntil { state.merge(debugPad) }
         #endif
         if !touchActive && wasMouseSwipeActive {
@@ -2055,7 +2428,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         }
         // A controller's right stick picks on the radio wheel (its own inputs have no controller
         // binding in this build; see PGSetRadioWheelDirection). The camera ignores the stick meanwhile.
-        if hasController, engineStarted, let pad = GCController.controllers().first(where: { $0.extendedGamepad != nil })?.extendedGamepad,
+        if engineStarted, let pad = connectedPad,
            PGReadControlHints(PGCurrentTouchContext()).radioWheelOpen {
             let x = pad.rightThumbstick.xAxis.value, y = pad.rightThumbstick.yAxis.value, length = hypotf(x, y)
             PGSetRadioWheelDirection(length > 0.3 ? x / length : 0, length > 0.3 ? y / length : 0, true)
@@ -2065,7 +2438,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             controllerRadioWheel = false
             PGSetRadioWheelDirection(0, 0, false)
         }
-        #if targetEnvironment(simulator)
+        #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
         debugLastPad = state
         #endif
         PGUpdateVirtualPad(state)

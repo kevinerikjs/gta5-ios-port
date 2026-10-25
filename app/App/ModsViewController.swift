@@ -85,7 +85,8 @@ final class ModsViewController: UITableViewController, UIDocumentPickerDelegate 
                 self.reload()
             }, for: .valueChanged)
             cell.accessoryView = toggle
-            cell.selectionStyle = .none
+            // Script mods (.asi): tap for the keys they use, to put them on screen or press them with others (GTA-179).
+            if ModKeys.scripts(of: mod).isEmpty { cell.selectionStyle = .none } else { content.secondaryText! += " · " + AppLanguage.choose("tap for its keys") }
         }
         cell.contentConfiguration = content
         return cell
@@ -95,6 +96,9 @@ final class ModsViewController: UITableViewController, UIDocumentPickerDelegate 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if sections[indexPath.section] == .packed { if !busy { install(packed[indexPath.row]) }; return }
+        if sections[indexPath.section] == .installed, indexPath.row < mods.count, !ModKeys.scripts(of: mods[indexPath.row]).isEmpty {
+            navigationController?.pushViewController(ModKeysListViewController(mod: mods[indexPath.row]), animated: true); return
+        }
         guard sections[indexPath.section] == .actions else { return }
         if indexPath.row == 0 {
             guard !busy else { return }

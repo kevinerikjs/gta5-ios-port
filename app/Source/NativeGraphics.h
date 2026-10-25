@@ -17,6 +17,9 @@ void PGNoteTextureRatio(int64_t gpuBytes, int64_t gameBytes);
 void PGSetSharperUpscaling(int on);
 // Frame rate 40 (ProMotion screens): each picture stays up at least this long; 0 for the other frame rates.
 void PGSetPresentInterval(double seconds);
+// Pictures that reached the screen since the last call (GTA-200): per second, the fastest 5% and the median gap between
+// two in milliseconds (they follow the screen's refresh rate), and how many never showed.
+void PGShownFrameStats(double *perSecond, double *fastGapMs, double *medianGapMs, uint32_t *notShown);
 #ifdef __cplusplus
 }
 #endif

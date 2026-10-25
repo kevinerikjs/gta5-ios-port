@@ -157,6 +157,7 @@ struct Query : Object {
 	uint64_t addr = 0;
 	std::vector<uint32_t> slots;
 	uint32_t seq = 0;
+	uint32_t draws = 0;		// draws while it was active (GTA-176)
 };
 
 // ---- formats ----------------------------------------------------------------------------------------------------------

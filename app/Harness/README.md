@@ -55,4 +55,5 @@ IS_CONTROL_ENABLED 2 215` then showed the input disabled.
 `scenarios/*.py` reproduce reported moments and check them; each says what it needs (save, launch mode) and how
 long it takes. `race_result.py` (GTA-98) wins the Stock Car Race and checks its result screen;
 `fail_prompt_and_exit.py` (GTA-107, GTA-113) the Mission failed prompt; `chop_switch.py` (GTA-81) the switch to
-Chop; `handler_frame.py` (GTA-97) the Handler's frame.
+Chop; `handler_frame.py` (GTA-97) the Handler's frame; `safehouse_garages.py` (GTA-104, GTA-52) leaving the car
+garage on foot, a parked car kept across a save and a restart, and a PC save's modded garage car.

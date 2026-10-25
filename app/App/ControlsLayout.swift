@@ -9,7 +9,7 @@ struct ControlsLayout {
     }
     private static let key = "controlsLayout"
     /// Never hidden: the game cannot be played (or left) without them.
-    static let essential: Set<String> = ["fire", "aim", "enter", "gas", "brake", "pause", "settings", "airFire"]
+    static let essential: Set<String> = ["fire", "aim", "enter", "gas", "brake", "pause", "settings", "airFire", "pad_menu"]
 
     static var entries: [String: Entry] {
         get {
@@ -34,13 +34,25 @@ struct ControlsLayout {
 }
 
 /// Full-screen editor: drag a control to move it, pinch (or the slider) to resize it, hide the
-/// ones you don't use. Shows the on-foot and the vehicle controls (switch at the bottom).
+/// ones you don't use. Shows the on-foot and the vehicle controls (switch at the bottom), and the Controller buttons
+/// touch scheme (GTA-195, ControllerPadView).
 final class ControlsLayoutEditorController: UIViewController {
     var onDone: (() -> Void)?
     private let controls = TouchControlsView(frame: .zero)
+    private let pad = ControllerPadView(frame: .zero)
+    /// The set of controls being edited: the situational layout, or the controller buttons.
+    /// In the Controller buttons group the player's mod buttons (in `controls`) are edited alongside the pad's own.
+    private var surface: LayoutEditableControls {
+        guard groupPicker.selectedSegmentIndex == 3 else { return controls }
+        return selected.map { controls.button(named: $0.name) === $0 } == true ? controls : pad
+    }
+    private func editable(at point: CGPoint) -> ControlButton? {
+        groupPicker.selectedSegmentIndex == 3 ? controls.editableButton(at: point) ?? pad.editableButton(at: point) : controls.editableButton(at: point)
+    }
     private let background = UIImageView()
     private let toolbar = UIStackView()
-    private let groupPicker = UISegmentedControl(items: [AppLanguage.choose("On foot"), AppLanguage.choose("In a vehicle"), AppLanguage.choose("Aircraft")])
+    private let groupPicker = UISegmentedControl(items: [AppLanguage.choose("On foot"), AppLanguage.choose("In a vehicle"), AppLanguage.choose("Aircraft"),
+                                                             AppLanguage.choose("Controller buttons")])
     private let sizeSlider = UISlider()
     private let hideButton = UIButton(type: .system)
     private let hint = UILabel()
@@ -67,7 +79,14 @@ final class ControlsLayoutEditorController: UIViewController {
         controls.characterSwitchEnabled = true
         controls.isUserInteractionEnabled = false
         view.addSubview(controls)
+        pad.translatesAutoresizingMaskIntoConstraints = false
+        pad.editing = true
+        pad.isUserInteractionEnabled = false
+        pad.isHidden = true
+        view.addSubview(pad)
         NSLayoutConstraint.activate([
+            pad.leadingAnchor.constraint(equalTo: view.leadingAnchor), pad.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pad.topAnchor.constraint(equalTo: view.topAnchor), pad.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             background.leadingAnchor.constraint(equalTo: view.leadingAnchor), background.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             background.topAnchor.constraint(equalTo: view.topAnchor), background.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             controls.leadingAnchor.constraint(equalTo: view.leadingAnchor), controls.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -81,7 +100,8 @@ final class ControlsLayoutEditorController: UIViewController {
         hint.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(hint)
 
-        groupPicker.selectedSegmentIndex = 0
+        // The Controller buttons scheme opens on its own buttons.
+        groupPicker.selectedSegmentIndex = GameSettings.shared.touchScheme == .controller ? 3 : 0
         groupPicker.overrideUserInterfaceStyle = .dark
         groupPicker.addAction(UIAction { [weak self] _ in self?.showGroup() }, for: .valueChanged)
         sizeSlider.minimumValue = 0.6
@@ -125,18 +145,22 @@ final class ControlsLayoutEditorController: UIViewController {
         applyLaunchArguments()
     }
 
-    private var group: String { groupPicker.selectedSegmentIndex == 0 ? "foot" : "vehicle" }
+    private var group: String { [0: "foot", 3: ControllerPadView.layoutGroup][groupPicker.selectedSegmentIndex] ?? "vehicle" }
 
     private func showGroup() {
+        let padShown = groupPicker.selectedSegmentIndex == 3
+        controls.padScheme = padShown   // there it shows only the mod buttons
+        pad.isHidden = !padShown
         // Aircraft share the vehicle layout, but show their own buttons (plane: vehicle type 1 + 1).
-        controls.updateContext(vehicle: [0, 1, 2][max(0, groupPicker.selectedSegmentIndex)], pauseMenu: false)
+        if !padShown { controls.updateContext(vehicle: [0, 1, 2][max(0, groupPicker.selectedSegmentIndex)], pauseMenu: false) }
         selected = nil
-        controls.updateVisibility()
-        controls.setNeedsLayout()
+        surface.updateVisibility()
+        surface.setNeedsLayout()
     }
 
     private func refreshSelection() {
-        controls.highlighted = selected
+        controls.highlighted = surface === controls ? selected : nil
+        pad.highlighted = surface === pad ? selected : nil
         sizeSlider.isEnabled = selected != nil
         let entry = selected.flatMap { ControlsLayout.entry(group: group, name: $0.name) }
         sizeSlider.value = Float(entry?.scale ?? 1)
@@ -155,30 +179,30 @@ final class ControlsLayoutEditorController: UIViewController {
     /// Writes the selected control's current place, keeping its size and hidden state.
     private func store(_ button: ControlButton, center: CGPoint? = nil, scale: CGFloat? = nil, hidden: Bool? = nil) {
         let old = ControlsLayout.entry(group: group, name: button.name)
-        let normalized = controls.normalized(center ?? button.center)
+        let normalized = surface.normalized(center ?? button.center)
         ControlsLayout.set(ControlsLayout.Entry(x: normalized.x, y: normalized.y,
                                                 scale: scale ?? old?.scale ?? 1, hidden: hidden ?? old?.hidden ?? false),
                            group: group, name: button.name)
-        controls.updateVisibility()
-        controls.setNeedsLayout()
-        controls.layoutIfNeeded()
+        surface.updateVisibility()
+        surface.setNeedsLayout()
+        surface.layoutIfNeeded()
     }
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
-        selected = controls.editableButton(at: gesture.location(in: controls))
+        selected = editable(at: gesture.location(in: view))
     }
     @objc private func panned(_ gesture: UIPanGestureRecognizer) {
-        let point = gesture.location(in: controls)
+        let point = gesture.location(in: surface)
         switch gesture.state {
         case .began:
             // The pan is recognized after the finger has already moved a little: look where it landed.
-            let moved = gesture.translation(in: controls)
+            let moved = gesture.translation(in: surface)
             let start = CGPoint(x: point.x - moved.x, y: point.y - moved.y)
-            selected = controls.editableButton(at: start)
+            selected = editable(at: start)
             if let selected { dragOffset = CGPoint(x: selected.center.x - start.x, y: selected.center.y - start.y) }
         case .changed:
             guard let selected else { return }
-            store(selected, center: controls.clampedToSafeArea(CGPoint(x: point.x + dragOffset.x, y: point.y + dragOffset.y)))
+            store(selected, center: surface.clampedToSafeArea(CGPoint(x: point.x + dragOffset.x, y: point.y + dragOffset.y)))
         default:
             break
         }
@@ -186,7 +210,7 @@ final class ControlsLayoutEditorController: UIViewController {
     @objc private func pinched(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
         case .began:
-            if selected == nil { selected = controls.editableButton(at: gesture.location(in: controls)) }
+            if selected == nil { selected = editable(at: gesture.location(in: view)) }
             pinchStartScale = selected.flatMap { ControlsLayout.entry(group: group, name: $0.name)?.scale } ?? 1
         case .changed:
             guard let selected else { return }
@@ -210,13 +234,32 @@ final class ControlsLayoutEditorController: UIViewController {
     private func resetGroup() {
         ControlsLayout.reset(group: group)
         selected = nil
-        controls.updateVisibility()
-        controls.setNeedsLayout()
+        for each in [controls, pad] as [LayoutEditableControls] { each.updateVisibility(); each.setNeedsLayout() }
     }
     private func finish() {
         onDone?()
         dismiss(animated: true)
     }
+
+    #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
+    /// Debug channel (`editor <group> [reset | <name> <x> <y> [scale] [hide]]`): picks a group (foot, vehicle, aircraft, pad), then selects
+    /// a control and moves it the way a drag does (store), to check that the game follows the editor.
+    func debugEdit(_ arguments: [String]) -> [String: Any] {
+        guard let index = ["foot", "vehicle", "aircraft", "pad"].firstIndex(of: arguments.first ?? "") else { return ["ok": false, "error": "editor foot|vehicle|aircraft|pad [name x y [scale] [hide]]"] }
+        if groupPicker.selectedSegmentIndex != index { groupPicker.selectedSegmentIndex = index; showGroup() }
+        surface.layoutIfNeeded()
+        if arguments.count == 2 && arguments[1] == "reset" { resetGroup(); return ["ok": true, "group": group, "reset": true] }
+        guard arguments.count >= 4 else { return ["ok": true, "group": group] }
+        guard let button = surface.button(named: arguments[1]), let x = Double(arguments[2]), let y = Double(arguments[3]) else { return ["ok": false, "error": "no such control"] }
+        selected = button
+        let safe = surface.bounds.inset(by: surface.safeAreaInsets)
+        let center = CGPoint(x: safe.minX + CGFloat(x) * safe.width, y: safe.minY + CGFloat(y) * safe.height)
+        store(button, center: surface.clampedToSafeArea(center), scale: arguments.count > 4 ? Double(arguments[4]).map { CGFloat($0) } : nil,
+              hidden: arguments.count > 5 ? arguments[5] == "hide" : nil)
+        refreshSelection()
+        return ["ok": true, "group": group, "name": button.name, "center": [Double(button.center.x / surface.bounds.width), Double(button.center.y / surface.bounds.height)]]
+    }
+    #endif
 
     /// Automation: --layout-demo moves and enlarges Jump (on foot) so the result can be checked
     /// without touching the screen; --layout-vehicle opens the vehicle set.

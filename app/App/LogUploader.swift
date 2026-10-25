@@ -7,6 +7,42 @@ enum LogUploader {
     /// The site accepts up to 4 MB, so each log is trimmed to 1.8 MB: its start (device, settings,
     /// game files) and its end (where it stopped or crashed).
     private static let perLog = 1_800_000
+
+    /// GTA-201: after a log is sent, offer to open the public report page (fivestarport.site/report) with the device,
+    /// system and app version and the log reference filled in, so the report arrives with its log. An optional
+    /// button next to OK (Kevin, 2026-10-25: on from v1.5).
+    static let offersReportPage = true
+    /// The report page for the log just sent (set on success when offersReportPage is on).
+    private(set) static var lastReportURL: URL?
+
+    static func reportURL(logID: String?) -> URL? {
+        var parts = URLComponents(string: "https://fivestarport.site/report/")
+        #if targetEnvironment(macCatalyst)
+        let (system, platform) = ("macOS", "mac")
+        #else
+        let (system, platform) = ("iOS", "iphone")
+        #endif
+        parts?.queryItems = [
+            URLQueryItem(name: "from", value: "app"),
+            URLQueryItem(name: "device", value: GameSettings.shared.tier.model),
+            URLQueryItem(name: "os", value: "\(system) \(UIDevice.current.systemVersion)"),
+            URLQueryItem(name: "v", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""),
+            URLQueryItem(name: "platform", value: platform),
+        ] + (logID.map { [URLQueryItem(name: "log", value: $0)] } ?? [])
+        return parts?.url
+    }
+
+    /// The alert after Send log: OK, plus "Report the problem" when the report page is on and the log went through.
+    static func resultAlert(_ title: String, _ message: String) -> UIAlertController {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        if offersReportPage, let url = lastReportURL {
+            alert.message = message + "\n\n" + AppLanguage.choose("You can also describe the problem on our report board, with this log attached. Others can vote on it, and you can follow the fix.")
+            alert.addAction(UIAlertAction(title: AppLanguage.choose("Report the problem"), style: .default) { _ in UIApplication.shared.open(url) })
+            lastReportURL = nil
+        }
+        alert.addAction(UIAlertAction(title: AppLanguage.choose("OK"), style: offersReportPage ? .cancel : .default))
+        return alert
+    }
     private static let head = 256_000
 
     static func trimmed(_ data: Data, to limit: Int = perLog) -> Data {
@@ -68,6 +104,7 @@ enum LogUploader {
             let result: (String, String)
             if status == 200 {
                 RunEnd.sent()
+                lastReportURL = offersReportPage ? reportURL(logID: reply?["id"] as? String) : nil
                 result = (AppLanguage.choose("Log sent, thank you!"), AppLanguage.interpolate(AppLanguage.choose("Reference: {arg0}. Mention it if you also ask for help in the community."), [String(describing: reply?["id"] as? String ?? "-")]))
             } else if error != nil {
                 result = (AppLanguage.choose("Couldn't send the log"), AppLanguage.choose("No internet connection? Try again, or use Share log instead."))

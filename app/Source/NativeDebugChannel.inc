@@ -1,4 +1,4 @@
-// Simulator only: the engine half of the test harness's debug channel (App/DebugChannel.swift serves it,
+// The simulator, and the Mac app with PG_DEBUG_PORT set: the engine half of the test harness's debug channel (App/DebugChannel.swift serves it,
 // Harness/gta.py drives it). PGDebugCommand runs one text command and writes a one-line JSON reply.
 // Memory, script globals and the game state are read right away on the calling thread; game commands
 // ("native") wait for the next frame of the main script (pg_debug_tick, from pg_asi_script_tick) and run
@@ -173,6 +173,11 @@ static void pg_debug_tick(w2c_game *instance, bool mainScript) {
       if (!*command) continue;
       pg_json_put(&pg_debug_out, first ? "" : ","); first = false;
       if (!strncmp(command, "native ", 7)) pg_debug_native(command, &pg_debug_out, allocated, &allocations, results, index);
+#if TARGET_OS_SIMULATOR
+      // trap: an engine trap on the game thread, where script mods' commands run, to test the trap log's function
+      // names and the stop panel (GTA-178). The game stops.
+      else if (!strcmp(command, "trap")) { pg_log("TEST: trap on the game thread"); wasm_rt_trap(WASM_RT_TRAP_UNREACHABLE); }
+#endif
       else { pg_json_put(&pg_debug_out, "{\"ok\":false,\"error\":"); pg_json_string(&pg_debug_out, command, 80); pg_json_put(&pg_debug_out, "}"); }
     }
     pg_json_put(&pg_debug_out, "]}");
@@ -207,9 +212,26 @@ void PGDebugCommand(const char *command, char *reply, size_t size) {
   reply[0] = 0;
   char word[16] = ""; sscanf(command, "%15s", word);
   const char *rest = command + strlen(word);
-  if (!atomic_load(&inputBlock) && strcmp(word, "ping")) { pg_json_put(&j, "{\"ok\":false,\"error\":\"the engine isn't running yet\"}"); return; }
+  if (!atomic_load(&inputBlock) && strcmp(word, "ping") && strcmp(word, "pgo") && strcmp(word, "burst")) { pg_json_put(&j, "{\"ok\":false,\"error\":\"the engine isn't running yet\"}"); return; }
   if (!strcmp(word, "ping")) {
     pg_json_put(&j, "{\"ok\":true,\"engine\":%s,\"frames\":%llu}", atomic_load(&inputBlock) ? "true" : "false", (unsigned long long)atomic_load(&pg_debug_frames));
+  } else if (!strcmp(word, "burst")) {
+    // burst <name> <frames>: the next frames as Documents/NativeFrames/<name>-NNN.png (GTA-176 flicker measurements).
+    extern void PGMetalRendererBurst(const char *name, int frames);
+    char name[128] = ""; int frames = 0;
+    sscanf(rest, "%127s %d", name, &frames);
+    if (!name[0] || frames <= 0) { pg_json_put(&j, "{\"ok\":false,\"error\":\"burst <name> <frames up to 300>\"}"); return; }
+    PGMetalRendererBurst(name, frames);
+    pg_json_put(&j, "{\"ok\":true}");
+  } else if (!strcmp(word, "pgo")) {
+    // pgo: an instrumented build (-fprofile-instr-generate, GTA-172) writes its profile to LLVM_PROFILE_FILE now.
+    // A simulator run ends by killing the app, so the profile runtime's own write at exit never comes.
+#ifdef __LLVM_INSTR_PROFILE_GENERATE
+    extern int __llvm_profile_write_file(void);	// compiler-rt's, hidden: called directly, not through dlsym
+    pg_json_put(&j, "{\"ok\":%s}", __llvm_profile_write_file() ? "false" : "true");
+#else
+    pg_json_put(&j, "{\"ok\":false,\"error\":\"not an instrumented build\"}");
+#endif
   } else if (!strcmp(word, "state")) {
     pg_debug_state_json(&j);
   } else if (!strcmp(word, "audiodump")) {
@@ -219,7 +241,7 @@ void PGDebugCommand(const char *command, char *reply, size_t size) {
     if (pg_audio_dump || !path[0] || seconds <= 0 || seconds > 120 || !(pg_audio_dump = fopen(path, "wb"))) { pg_json_put(&j, "{\"ok\":false,\"error\":\"audiodump <path> <seconds up to 120>, one at a time\"}"); return; }
     atomic_store(&pg_audio_dump_frames, (int64_t)(seconds * 48000));
     pg_json_put(&j, "{\"ok\":true}");
-  } else if (!strcmp(word, "native")) {
+  } else if (!strcmp(word, "native") || !strcmp(word, "trap")) {
     pg_debug_on_game_thread(command, &j);
   } else if (!strcmp(word, "peek")) {
     // peek <address> <length>: the bytes as hex
@@ -251,6 +273,12 @@ void PGDebugCommand(const char *command, char *reply, size_t size) {
       else pg_json_put(&j, "null");
     }
     pg_json_put(&j, "]}");
+  } else if (!strcmp(word, "hud")) {
+    // hud <piece> <dx> <dy> <scale>: a HUD layout piece's place now (GTA-197; the wheel and the phone apply at once).
+    int piece = -1; double dx = 0, dy = 0, scale = 1;
+    if (sscanf(rest, "%d %lf %lf %lf", &piece, &dx, &dy, &scale) < 3 || piece < 0 || piece > 5) { pg_json_put(&j, "{\"ok\":false,\"error\":\"hud <piece 0-5> <dx> <dy> [scale]\"}"); return; }
+    PGSetHudPiece(piece, dx, dy, scale);
+    pg_json_put(&j, "{\"ok\":true}");
   } else if (!strcmp(word, "gset")) {
     // gset <index> <value>: i:N (or a number), f:X, u:N
     unsigned long long index = 0; char value[64] = "";

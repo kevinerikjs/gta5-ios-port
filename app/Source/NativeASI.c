@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -44,7 +45,8 @@ static void logf_(const char *format, ...) {
 static uint64_t now_us(void) { struct timeval t; gettimeofday(&t, 0); return (uint64_t)t.tv_sec * 1000000 + (uint64_t)t.tv_usec; }
 
 // ---- Modules -------------------------------------------------------------------------------
-typedef struct { char name[64]; char root[1024]; uint64_t base, size, entry; uint64_t tlsIndexAddress, tlsStart, tlsEnd; uint32_t tlsZero; bool dead; } Module;
+// pdata: the module's unwind table (RUNTIME_FUNCTION entries), which C++ exceptions walk the stack with (GTA-188).
+typedef struct { char name[64]; char root[1024]; uint64_t base, size, entry; uint64_t tlsIndexAddress, tlsStart, tlsEnd; uint32_t tlsZero; bool dead; uint64_t pdata; uint32_t pdataCount; } Module;
 static Module modules[16]; static int moduleCount;
 static uint64_t fakeExe;  // stands in for GTA5.exe: header only, so pattern scans find nothing (and say so)
 static int moduleIndex(uint64_t a);
@@ -53,13 +55,20 @@ static int moduleIndex(uint64_t a) { Module *m = moduleAt(a); return m ? (int)(m
 
 // ---- Coroutines: script threads (scriptRegister, CreateThread) and one-off calls -------------
 enum { CO_NEW, CO_READY, CO_WAIT, CO_DEAD };
+struct Nest; struct Catch; struct Throw;
 typedef struct Co {
   struct Machine *m; uint64_t stack, stackSize, teb, entry, param; int state, module; uint64_t wakeAt;
   bool script, yield, finished; uint64_t result;  // native result buffer
   uint64_t unwaited; bool slowLogged;  // instructions since it last waited (run's time slices, GTA-165)
   uint64_t args[32]; uint32_t argc; uint64_t hash;
   uint64_t tls[64], fls[64];
+  // The C/C++ runtime (NativeASIRuntime.inc, GTA-188): calls from an import back into the mod (a constructor, a
+  // comparator, a stream's virtual function) run nested on this thread; catch blocks running; a C++ throw that
+  // left such a nested call and goes on outside it; exceptions thrown and not caught yet.
+  struct Nest *nest; int nestDepth; struct Catch *catches; struct Throw *pending; int uncaught;
 } Co;
+#define HALT_QUIET (-100)  // run() stops a script without a log line of its own (the reason is already logged)
+static void ehAbandon(Co *co);
 static Co *threads[64]; static int threadCount; static Co *cur;
 static pthread_t runner; static volatile sig_atomic_t running;  // a mod's code is running on this thread
 static uint64_t stubs;  // import stubs: mov eax, id; syscall; ret
@@ -87,6 +96,7 @@ static uint64_t makeTeb(Co *co, int module) {
 static Co *newCo(uint64_t entry, uint64_t param, bool script, int module) {
   Co *co = 0;
   for (int i = 0; i < threadCount && !co; i++) if (threads[i]->state == CO_DEAD) co = threads[i];  // reuse a finished one
+  if (co) ehAbandon(co);
   if (!co) {
     if (threadCount >= 64) { logf_("ASI: too many script threads; one was not started."); return 0; }
     co = calloc(1, sizeof *co); co->m = NewMachine(sys, 0); co->stackSize = 1 << 20; co->stack = galloc(co->stackSize);
@@ -114,6 +124,14 @@ static const char *faultName(int rc) {
     default: return "fault";
   }
 }
+// A script still busy from earlier frames (a mod starting up, like Menyoo reading its lists): which mod and when,
+// for the app's "Loading <mod>" notice while the game runs slowly (GTA-209). Written on the game thread only.
+static const char *volatile busyModName; static volatile double busyModAt;
+static double asiNow(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
+const char *PGAsiBusyModName(void) {
+  double at = busyModAt; const char *name = busyModName;
+  return name && at > 0 && asiNow() - at < 0.5 ? name : NULL;
+}
 // Runs a coroutine until it yields (scriptWait/Sleep), returns from its function, or faults.
 static bool run(Co *co) {
   Co *outer = cur; cur = co; co->yield = false;
@@ -123,9 +141,10 @@ static bool run(Co *co) {
   if ((rc = sigsetjmp(m->onhalt, 1))) {
     Module *mod = moduleAt(m->ip);
     running = outer != 0;
-    logf_("ASI %s: %s at +0x%llx (address 0x%llx); this script is stopped.", mod ? mod->name : "?", faultName(rc),
-          (unsigned long long)(mod ? m->ip - mod->base : m->ip), (unsigned long long)m->faultaddr);
-    co->state = CO_DEAD; ok = false;
+    if (rc != HALT_QUIET)
+      logf_("ASI %s: %s at +0x%llx (address 0x%llx); this script is stopped.", mod ? mod->name : "?", faultName(rc),
+            (unsigned long long)(mod ? m->ip - mod->base : m->ip), (unsigned long long)m->faultaddr);
+    co->state = CO_DEAD; ok = false; ehAbandon(co);
   } else {
     m->canhalt = true; uint64_t count = 0; runner = pthread_self(); running = 1;
     // A script runs about 20 million instructions (about 0.1 s) per frame at most, then the game goes on and the
@@ -141,9 +160,12 @@ static bool run(Co *co) {
       Module *mod = moduleAt(m->ip);
       logf_("ASI %s: a script ran too long without waiting (at +0x%llx); it is stopped.", mod ? mod->name : "?", (unsigned long long)(mod ? m->ip - mod->base : m->ip));
       co->state = CO_DEAD;
-    } else if (!co->slowLogged) {
-      Module *mod = moduleAt(m->ip); co->slowLogged = true;
-      logf_("ASI %s: a script is busy for longer than a frame; it goes on over the next frames.", mod ? mod->name : "?");
+    } else {
+      if (co->module >= 0 && co->module < moduleCount) { busyModName = modules[co->module].name; busyModAt = asiNow(); }
+      if (!co->slowLogged) {
+        Module *mod = moduleAt(m->ip); co->slowLogged = true;
+        logf_("ASI %s: a script is busy for longer than a frame; it goes on over the next frames.", mod ? mod->name : "?");
+      }
     }
     running = outer != 0; ticks_instructions += count;
   }
@@ -198,6 +220,7 @@ static void hostPath(const char *windows, char *out, size_t cap) {
 typedef uint64_t (*Fn)(void);
 typedef struct { const char *name; Fn fn; } Import;
 static const char *stubName[4096]; static Fn stubFn[4096]; static int stubCount;
+enum { ID_EXIT = 0, ID_FIRST = 1 };  // stub ids: 0 ends a call (exitStub), the rest are imports (stubName/stubFn index + 1)
 #define ARG(n) arg(n)
 static uint64_t arg(int n) {
   struct Machine *m = cur->m;
@@ -220,6 +243,12 @@ static uint64_t k_HeapReAlloc(void) {
   return fresh;
 }
 static uint64_t k_GetProcessHeap(void) { return 0x1000; }
+// Private heaps (HeapCreate): a handle of their own, with blocks from the same allocator as the process heap. Menyoo's newest
+// desktop build (4.4 MB) creates one at start-up and throws std::bad_alloc when it gets none: 26 player logs from v1.4.1 to
+// v1.4.7 stop at the same int3 after that throw (GTA-186). HeapDestroy leaves the blocks to their own HeapFree calls.
+static uint64_t k_HeapCreate(void) { static uint64_t next = 0x2000; return next += 0x10; }
+static uint64_t k_HeapDestroy(void) { return 1; }
+static uint64_t k_HeapValidate(void) { return 1; }
 static uint64_t k_VirtualAlloc(void) {
   if (ARG(0)) return ARG(0);  // commit inside an earlier reservation: already backed
   uint64_t size = ARG(1), raw = H.alloc(size + 0x10000); if (!raw) return 0;
@@ -519,8 +548,47 @@ static uint64_t k_WritePrivateProfileStringA(void) {
 static uint8_t polledKeys[256], polledThisFrame[256];
 static uint8_t keysClosed[256], keysOpen[256], keysOpening[256], keysHinted[256];
 static uint32_t frameDraws, tickNumber, lastPressed[256];
+static uint64_t lastModKeyUs;  // when the player last pressed a key for the mods (the Mod keys pad presses Windows keys)
+// ASI_TRACE=n: log n import calls (from game frame ASI_TRACE_FRAME on, or from the first mod key with
+// ASI_TRACE_FRAME=key) and the game commands' results, for debugging a mod.
+static long traceLeft = -1, traceFrom;
+static bool tracing(void) {
+  if (traceLeft < 0) {
+    const char *from = getenv("ASI_TRACE_FRAME");
+    traceLeft = getenv("ASI_TRACE") ? atol(getenv("ASI_TRACE")) : 0;
+    traceFrom = !from ? 0 : !strcmp(from, "key") ? LONG_MAX : atol(from);
+  }
+  return traceLeft > 0 && (long)tickNumber >= traceFrom;
+}
 static bool menuVisible;
-static uint64_t u_GetAsyncKeyState(void) { int vk = (int)(ARG(0) & 255); polledKeys[vk] = 1; polledThisFrame[vk] = 1; return H.key_down && H.key_down(vk) ? 0x8000 : 0; }
+// Keys a player chose to answer a mod's key (Settings › Mods › the mod's keys, GTA-181): the mod asks about modKey and
+// sees whether key is down; keyboard handlers get key's events as modKey's, and modKey's own not at all. By .asi
+// file name, set from the main thread before or while the mods run.
+static pthread_mutex_t remapLock = PTHREAD_MUTEX_INITIALIZER;
+static struct { char module[64]; uint8_t modKey, key; } remaps[64]; static volatile int remapCount;
+void pg_asi_set_key_remap(const char *module, int modKey, int key) {
+  if (modKey <= 0 || modKey > 255 || key <= 0 || key > 255) return;
+  pthread_mutex_lock(&remapLock);
+  if (remapCount < 64) { snprintf(remaps[remapCount].module, 64, "%s", module); remaps[remapCount].modKey = (uint8_t)modKey; remaps[remapCount].key = (uint8_t)key; remapCount++; }
+  pthread_mutex_unlock(&remapLock);
+}
+void pg_asi_clear_key_remaps(void) { pthread_mutex_lock(&remapLock); remapCount = 0; pthread_mutex_unlock(&remapLock); }
+// For a module: the key that answers its modKey (forward), or the modKey that key answers (backward); 0 when none.
+static int remapped(int module, int vk, bool forward) {
+  if (!remapCount || module < 0 || module >= moduleCount) return 0;
+  int found = 0; pthread_mutex_lock(&remapLock);
+  for (int i = 0; i < remapCount && !found; i++)
+    if ((forward ? remaps[i].modKey : remaps[i].key) == vk && !strcasecmp(remaps[i].module, modules[module].name)) found = forward ? remaps[i].key : remaps[i].modKey;
+  pthread_mutex_unlock(&remapLock); return found;
+}
+// Keys each mod asked about while it ran (the mod's keys list in Settings shows them as "seen while playing").
+static uint8_t polledByModule[16][256];
+static uint64_t u_GetAsyncKeyState(void) {
+  int vk = (int)(ARG(0) & 255), module = cur ? cur->module : -1, key = remapped(module, vk, true);
+  if (!key) key = vk;
+  if (module >= 0 && module < 16) polledByModule[module][vk] = 1;
+  polledKeys[key] = 1; polledThisFrame[key] = 1; return H.key_down && H.key_down(key) ? 0x8000 : 0;
+}
 static uint64_t s_PathFindFileNameA(void) { uint64_t p = ARG(0), last = p; for (uint64_t a = p; *G(a); a++) if (*G(a) == '\\' || *G(a) == '/') last = a + 1; return last; }
 
 // ---- Script Hook V ----------------------------------------------------------------------------
@@ -544,11 +612,16 @@ static uint64_t v_nativeCall(void) {
   // DRAW_RECT, DRAW_SPRITE, END_TEXT_COMMAND_DISPLAY_TEXT: a mod drawing its menu (Mod keys pad).
   if (cur->hash == 0x3a618a217e5154f0ull || cur->hash == 0xe7ffae5ebf23d890ull || cur->hash == 0xcd015e5bb0d96a57ull) frameDraws++;
   memcpy(G(nativeArgs), cur->args, 8 * cur->argc); memset(G(cur->result), 0, 64);
+  // IS_USING_KEYBOARD_AND_MOUSE: on a PC the game says yes once the player presses a key, and the Mod keys pad presses
+  // Windows keys, so for half a minute after a mod key the answer is yes. Desktop Menyoo only reads its F8 then; when
+  // the game says no keyboard it waits for its controller button combination instead (GTA-188).
+  if (cur->hash == 0xa571d46727e2b718ull && lastModKeyUs && now_us() - lastModKeyUs < 30000000) { wr64(cur->result, 1); return cur->result; }
   if (!H.native(cur->hash, nativeArgs, cur->argc, cur->result)) {
     static uint64_t told[64]; static int toldCount; bool seen = false;
     for (int i = 0; i < toldCount; i++) if (told[i] == cur->hash) seen = true;
     if (!seen && toldCount < 64) { told[toldCount++] = cur->hash; logf_("ASI: game command 0x%016llx isn't in this game version; it does nothing.", (unsigned long long)cur->hash); }
   }
+  if (tracing()) logf_("ASI trace: game command 0x%016llx = 0x%llx", (unsigned long long)cur->hash, (unsigned long long)rd64(cur->result));
   return cur->result;
 }
 static uint64_t v_getGlobalPtr(void) { return H.global ? H.global((int)ARG(0)) : 0; }
@@ -559,8 +632,11 @@ static uint64_t v_worldGetAllObjects(void) { return v_worldGetAll(2); }
 static uint64_t v_getGameVersion(void) { return (uint64_t)H.game_version; }
 static uint64_t v_minusOne(void) { return (uint64_t)-1; }
 
+// The Microsoft C/C++ runtime (UCRT, VCRUNTIME140, MSVCP140) for mods built with /MD, and C++ exceptions (GTA-188).
+#include "NativeASIRuntime.inc"
+
 static const Import imports[] = {
-  {"HeapAlloc", k_HeapAlloc}, {"HeapFree", k_HeapFree}, {"HeapSize", k_HeapSize}, {"HeapReAlloc", k_HeapReAlloc}, {"GetProcessHeap", k_GetProcessHeap},
+  {"HeapAlloc", k_HeapAlloc}, {"HeapFree", k_HeapFree}, {"HeapSize", k_HeapSize}, {"HeapReAlloc", k_HeapReAlloc}, {"GetProcessHeap", k_GetProcessHeap}, {"HeapCreate", k_HeapCreate}, {"HeapDestroy", k_HeapDestroy}, {"HeapValidate", k_HeapValidate},
   {"VirtualAlloc", k_VirtualAlloc}, {"VirtualFree", k_VirtualFree}, {"VirtualProtect", k_VirtualProtect}, {"VirtualQuery", k_VirtualQuery},
   {"GetModuleHandleA", k_GetModuleHandleA}, {"GetModuleHandleW", k_GetModuleHandleW}, {"GetModuleHandleExW", k_GetModuleHandleExW},
   {"GetModuleFileNameA", k_GetModuleFileNameA}, {"GetModuleFileNameW", k_GetModuleFileNameW}, {"K32GetModuleInformation", K32GetModuleInformation_},
@@ -585,7 +661,7 @@ static const Import imports[] = {
   {"RtlCaptureContext", unimplemented}, {"RtlLookupFunctionEntry", unimplemented}, {"RtlVirtualUnwind", unimplemented}, {"RtlUnwindEx", k_RaiseException}, {"RtlPcToFileHeader", unimplemented},
   {"GetACP", k_GetACP}, {"GetOEMCP", k_GetOEMCP}, {"IsValidCodePage", k_one}, {"GetCPInfo", k_GetCPInfo}, {"MultiByteToWideChar", k_MultiByteToWideChar}, {"WideCharToMultiByte", k_WideCharToMultiByte},
   {"LCMapStringEx", k_LCMapStringEx}, {"LCMapStringW", k_LCMapStringW}, {"GetStringTypeW", k_GetStringTypeW}, {"CompareStringW", k_CompareStringW},
-  {"GetLocaleInfoW", unimplemented}, {"IsValidLocale", k_one}, {"GetUserDefaultLCID", k_GetUserDefaultLCID}, {"EnumSystemLocalesW", k_one},
+  {"IsValidLocale", k_one}, {"GetUserDefaultLCID", k_GetUserDefaultLCID}, {"EnumSystemLocalesW", k_one},
   {"CreateFileW", k_CreateFileW}, {"CreateFileA", k_CreateFileA}, {"ReadFile", k_ReadFile}, {"WriteFile", k_WriteFile}, {"WriteConsoleW", k_WriteConsoleW}, {"ReadConsoleW", unimplemented},
   {"CloseHandle", k_CloseHandle}, {"GetFileSizeEx", k_GetFileSizeEx}, {"SetFilePointerEx", k_SetFilePointerEx}, {"SetEndOfFile", k_SetEndOfFile}, {"FlushFileBuffers", k_one},
   {"GetFileType", k_GetFileType}, {"GetStdHandle", k_GetStdHandle}, {"SetStdHandle", k_one}, {"GetConsoleMode", k_GetConsoleMode}, {"GetConsoleOutputCP", k_GetConsoleOutputCP},
@@ -606,13 +682,21 @@ static void plainName(const char *name, char *out, size_t cap) {
   if (name[0] == '?') { const char *at = strchr(name + 1, '@'); size_t n = at ? (size_t)(at - name - 1) : strlen(name + 1); snprintf(out, cap, "%.*s", (int)n, name + 1); }
   else snprintf(out, cap, "%s", name);
 }
-enum { ID_EXIT = 0, ID_FIRST = 1 };
-static uint64_t stubFor(const char *name) {
+// The host function for an import: C++ library functions by their full decorated name first (their plain names
+// collide: every basic_ostream::operator<< is "?6?$basic_ostream"), then by plain name (Script Hook V's
+// decorated names, kernel32, the C runtime).
+static Fn importFn(const char *name) {
+  for (size_t i = 0; i < sizeof cppImports / sizeof *cppImports; i++) if (!strcmp(cppImports[i].name, name)) return cppImports[i].fn;
   char plain[128]; plainName(name, plain, sizeof plain);
-  for (int i = 0; i < stubCount; i++) if (!strcmp(stubName[i], plain)) return stubs + 16 * (uint64_t)(ID_FIRST + i);
+  for (size_t i = 0; i < sizeof imports / sizeof *imports; i++) if (!strcmp(imports[i].name, plain)) return imports[i].fn;
+  for (size_t i = 0; i < sizeof crtImports / sizeof *crtImports; i++) if (!strcmp(crtImports[i].name, plain)) return crtImports[i].fn;
+  return 0;
+}
+static uint64_t stubFor(const char *name) {
+  for (int i = 0; i < stubCount; i++) if (!strcmp(stubName[i], name)) return stubs + 16 * (uint64_t)(ID_FIRST + i);
   if (stubCount >= 4000) return 0;
-  Fn fn = 0; for (size_t i = 0; i < sizeof imports / sizeof *imports; i++) if (!strcmp(imports[i].name, plain)) fn = imports[i].fn;
-  stubName[stubCount] = strdup(plain); stubFn[stubCount] = fn;
+  Fn fn = importFn(name);
+  stubName[stubCount] = strdup(name); stubFn[stubCount] = fn;
   uint64_t at = stubs + 16 * (uint64_t)(ID_FIRST + stubCount); uint32_t id = (uint32_t)(ID_FIRST + stubCount);
   uint8_t code[16] = {0xB8, (uint8_t)id, (uint8_t)(id >> 8), (uint8_t)(id >> 16), (uint8_t)(id >> 24), 0x0F, 0x05, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
   memcpy(G(at), code, 16); stubCount++; return at;
@@ -627,7 +711,18 @@ static bool onSyscall(struct Machine *m) {
     static char told[4096]; if (!told[i]) { told[i] = 1; logf_("ASI: Windows function %s isn't available on iOS; it returns 0.", stubName[i]); }
     Put64(m->ax, 0); return true;
   }
-  Put64(m->ax, stubFn[i]()); return true;
+  // An import may set the machine's registers itself (a C++ throw jumping to a catch block): then RAX is left as
+  // it set it. A throw that left a nested call made by this import goes on here, outside that call (GTA-188).
+  if (tracing()) {
+    traceLeft--; uint64_t from = rd64(Get64(m->sp)); Module *mod = moduleAt(from);
+    logf_("ASI trace: %s(0x%llx, 0x%llx, 0x%llx) from %s+0x%llx", stubName[i], (unsigned long long)Get64(m->cx), (unsigned long long)Get64(m->dx), (unsigned long long)Get64(m->r8),
+          mod ? mod->name : "?", (unsigned long long)(mod ? from - mod->base : from));
+  }
+  int depth = cur->nestDepth; rawReturn = false; thrown = false;
+  uint64_t value = stubFn[i]();
+  if (cur->pending && cur->pending->resumeDepth == depth) { continuePending(); return true; }
+  if (!rawReturn) Put64(m->ax, value);
+  return true;
 }
 
 // ---- Faults ---------------------------------------------------------------------------------
@@ -664,7 +759,7 @@ bool pg_asi_init(const PGAsiHost *host) {
   cmdA = galloc(16); memcpy(G(cmdA), "GTA5.exe", 9);
   cmdW = galloc(32); for (int i = 0; i < 9; i++) wr16(cmdW + 2 * (uint64_t)i, (uint8_t)"GTA5.exe"[i]);
   envW = galloc(8);
-  return true;
+  return runtimeInit();
 }
 // A mod's menu key from its settings: trainers that take keys through a Script Hook V keyboard handler
 // never ask about them, but their .ini files name them ("MenuKey=114", "OpenKey=0x77", "ToggleKey=F8").
@@ -700,6 +795,22 @@ static void hintKeys(const char *folder, int depth) {
     fclose(f);
   }
   closedir(dir);
+}
+// Desktop Menyoo (GTA-188) keeps "the submenu to open next" in a variable that starts at 0 instead of "none" (-1),
+// so the frame after the first F8 it opens submenu 0, which is "closed": the menu shows for one frame and F8 has to
+// be pressed again. Menyoo's own iOS build starts it at -1; this does the same for the desktop build. The variable
+// is found by the one place that uses it: mov ecx, [x]; cmp ecx, -1; je over; call; mov dword [x], -1.
+static void menyooFirstOpen(const Module *mod) {
+  if (strncasecmp(mod->name, "Menyoo", 6)) return;
+  const uint8_t *image = G(mod->base);
+  for (uint64_t i = 0; i + 26 <= mod->size; i++) {
+    const uint8_t *p = image + i;
+    if (p[0] != 0x8B || p[1] != 0x0D || p[6] != 0x83 || p[7] != 0xF9 || p[8] != 0xFF || p[9] != 0x74 || p[10] != 0x0F || p[11] != 0xE8 ||
+        p[16] != 0xC7 || p[17] != 0x05 || rd32(mod->base + i + 22) != 0xFFFFFFFFu) continue;
+    uint64_t x = mod->base + i + 6 + (uint64_t)(int64_t)(int32_t)rd32(mod->base + i + 2), y = mod->base + i + 26 + (uint64_t)(int64_t)(int32_t)rd32(mod->base + i + 18);
+    if (x != y || x < mod->base || x + 4 > mod->base + mod->size || rd32(x) != 0) continue;
+    wr32(x, 0xFFFFFFFFu); logf_("ASI %s: its menu now opens on the first key press.", mod->name); return;
+  }
 }
 int pg_asi_load(const char *name, const char *root, const uint8_t *bytes, uint64_t length) {
   #define BAD(why) do { logf_("ASI %s: %s; not loaded.", name, why); return 0; } while (0)
@@ -740,22 +851,24 @@ int pg_asi_load(const char *name, const char *root, const uint8_t *bytes, uint64
     const char *dll = (const char *)G(base + rd32(d + 12)); uint64_t lookup = base + (rd32(d) ? rd32(d) : rd32(d + 16)), iat = base + rd32(d + 16);
     for (uint64_t k = 0;; k++) {
       uint64_t t = rd64(lookup + 8 * k); if (!t) break;
-      char name[160]; if (t >> 63) snprintf(name, sizeof name, "%s#%u", dll, (unsigned)(t & 0xFFFF)); else snprintf(name, sizeof name, "%s", (const char *)G(base + (t & 0x7FFFFFFF) + 2));
-      uint64_t stub = stubFor(name); wr64(iat + 8 * k, stub);
-      char plain[128]; plainName(name, plain, sizeof plain); bool known = false;
-      for (size_t j = 0; j < sizeof imports / sizeof *imports; j++) if (!strcmp(imports[j].name, plain)) known = true;
+      char name[400]; if (t >> 63) snprintf(name, sizeof name, "%s#%u", dll, (unsigned)(t & 0xFFFF)); else snprintf(name, sizeof name, "%s", (const char *)G(base + (t & 0x7FFFFFFF) + 2));
+      // Data exports (the C++ library's locale ids) get a cell of guest memory; functions get a stub.
+      uint64_t cell = dataImport(name), stub = cell ? cell : stubFor(name); wr64(iat + 8 * k, stub);
+      char plain[128]; plainName(name, plain, sizeof plain); bool known = cell || importFn(name);
       if (!known) { missing++; if (strlen(missingList) < 400) { strcat(missingList, missingList[0] ? ", " : ""); strcat(missingList, plain); } }
     }
   }
   if (missing) logf_("ASI %s: %d Windows function%s not available on iOS (they return 0): %s", name, missing, missing == 1 ? "" : "s", missingList);
   Module *mod = &modules[moduleCount++]; snprintf(mod->name, sizeof mod->name, "%s", name); snprintf(mod->root, sizeof mod->root, "%s", root ? root : H.files);
   hintKeys(mod->root, 0); mod->base = base; mod->size = sizeOfImage; mod->entry = entry ? base + entry : 0;
+  { uint32_t d[2] = {DIR(3)}; mod->pdata = d[0] ? base + d[0] : 0; mod->pdataCount = d[0] && (uint64_t)d[0] + d[1] <= sizeOfImage ? d[1] / 12 : 0; }
   if (tlsAt) {
     uint64_t t = base + tlsAt; mod->tlsStart = rd64(t); mod->tlsEnd = rd64(t + 8); mod->tlsIndexAddress = rd64(t + 16); mod->tlsZero = rd32(t + 32);
     wr32(mod->tlsIndexAddress, (uint32_t)(moduleCount - 1));
     for (uint64_t cb = rd64(t + 24); cb && rd64(cb); cb += 8) callGuest(rd64(cb), (uint64_t[]){base, 1, 0}, 3);
   }
   logf_("ASI %s: loaded at 0x%llx (%u KB).", name, (unsigned long long)base, sizeOfImage / 1024);
+  menyooFirstOpen(mod);
   if (mod->entry) {
     uint64_t ok = callGuest(mod->entry, (uint64_t[]){base, 1, 0}, 3);
     if (!(uint32_t)ok) { logf_("ASI %s: its start-up (DllMain) reported failure; not loaded.", name); mod->dead = true; return 0; }
@@ -773,6 +886,8 @@ void pg_asi_tick(void) {
   // Mod keys: a menu is on screen when the mods drew a fair amount this frame. Keys checked now are
   // menu keys (navigation) or not (hotkeys); a key pressed just before a menu appeared opens it.
   bool visible = frameDraws >= 4;
+  static int drawDebug = -1; if (drawDebug < 0) drawDebug = getenv("ASI_DEBUG_DRAWS") != 0;  // ASI_DEBUG_DRAWS: when a mod menu shows and goes
+  if (drawDebug && visible != menuVisible) logf_("ASI: frame %u: a mod menu is %s (%u draws).", tickNumber, visible ? "drawn" : "gone", frameDraws);
   if (visible && !menuVisible) for (int k = 1; k < 256; k++) if (lastPressed[k] && tickNumber - lastPressed[k] < 20 && keysOpening[k] < 255) keysOpening[k]++;
   menuVisible = visible; frameDraws = 0; tickNumber++;
   for (int k = 1; k < 256; k++) if (polledThisFrame[k]) { uint8_t *count = visible ? &keysOpen[k] : &keysClosed[k]; if (*count < 255) (*count)++; polledThisFrame[k] = 0; }
@@ -782,14 +897,33 @@ void pg_asi_tick(void) {
 }
 void pg_asi_key_info(PGAsiKeyInfo *info) {
   memcpy(info->closed, keysClosed, 256); memcpy(info->open, keysOpen, 256); memcpy(info->opens, keysOpening, 256); memcpy(info->hinted, keysHinted, 256);
+  // A menu key answered by another key (GTA-181): the pad offers that key too.
+  pthread_mutex_lock(&remapLock);
+  for (int i = 0; i < remapCount; i++) if (keysHinted[remaps[i].modKey] && !info->hinted[remaps[i].key]) info->hinted[remaps[i].key] = keysHinted[remaps[i].modKey];
+  pthread_mutex_unlock(&remapLock);
   info->menuVisible = menuVisible; info->keyboardHandler = keyboardCount > 0;
 }
 void pg_asi_key(int vk, bool down) {
   if (down && vk > 0 && vk < 256) lastPressed[vk] = tickNumber ? tickNumber : 1;
-  for (int i = 0; i < keyboardCount; i++)
-    callGuest(keyboardHandlers[i], (uint64_t[]){(uint64_t)vk, 1, 0, 0, 0, down ? 0 : 1, down ? 0 : 1}, 7);
+  lastModKeyUs = now_us();
+  tracing(); if (traceFrom == LONG_MAX) traceFrom = tickNumber;
+  for (int i = 0; i < keyboardCount; i++) {
+    int module = moduleIndex(keyboardHandlers[i]), key = remapped(module, vk, false);
+    if (!key) { if (remapped(module, vk, true)) continue; key = vk; }  // a key answered by another one isn't its own any more
+    if (getenv("ASI_TRACE")) logf_("ASI trace: key 0x%02x %s to the keyboard handler at +0x%llx", key, down ? "down" : "up", (unsigned long long)(module >= 0 ? keyboardHandlers[i] - modules[module].base : keyboardHandlers[i]));
+    callGuest(keyboardHandlers[i], (uint64_t[]){(uint64_t)key, 1, 0, 0, 0, down ? 0 : 1, down ? 0 : 1}, 7);
+  }
 }
 bool pg_asi_polled_keys(uint8_t polled[256]) { memcpy(polled, polledKeys, 256); return keyboardCount > 0; }
+bool pg_asi_module_keys(const char *name, uint8_t polled[256], bool *keyboardHandler) {
+  for (int m = 0; m < moduleCount && m < 16; m++) {
+    if (strcasecmp(modules[m].name, name)) continue;
+    memcpy(polled, polledByModule[m], 256);
+    *keyboardHandler = false; for (int i = 0; i < keyboardCount; i++) if (moduleIndex(keyboardHandlers[i]) == m) *keyboardHandler = true;
+    return true;
+  }
+  return false;
+}
 void pg_asi_stats(uint64_t *us, uint64_t *instructions) { *us = tick_us; *instructions = ticks_instructions; }
 // Blink delivers an unhandled guest signal here (its own main() would end the process): only
 // the mod's script stops.

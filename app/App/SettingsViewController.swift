@@ -33,8 +33,8 @@ final class SettingsViewController: UITableViewController {
     // that flag is shared by the game's own aim-assist logic.
     private enum ControlsTab: Int { case stick = 0, swipe = 1 }
     private enum ControlsRow {
-        case tab, swipeLook, swipeAim, stickLook, stickAim
-        case targeting, fireAlsoAims, sprintButton, steeringButtons, airplaneRightStick, buttonSize, buttonOpacity, editLayout, minimap, helpText
+        case touchScheme, tab, swipeLook, swipeAim, stickLook, stickAim
+        case targeting, fireAlsoAims, sprintButton, steeringButtons, airplaneRightStick, buttonSize, buttonOpacity, editLayout, hudLayout, minimap, helpText
         case hideTouchWithController, keyboardMouse, inputState, safeZone
     }
     private var controlsTab: ControlsTab {
@@ -43,8 +43,14 @@ final class SettingsViewController: UITableViewController {
     /// The camera choice only swaps its two speed rows; every other control setting is always there.
     private var controlsRows: [ControlsRow] {
         let camera: [ControlsRow] = controlsTab == .stick ? [.stickLook, .stickAim] : [.swipeLook, .swipeAim]
-        return [.tab] + camera + [.targeting, .fireAlsoAims, .sprintButton, .steeringButtons, .airplaneRightStick, .buttonSize, .buttonOpacity,
-                                  .editLayout, .minimap, .helpText, .safeZone, .hideTouchWithController, .keyboardMouse]
+        // Touch scheme (GTA-195) first: it decides which buttons the rest applies to. A Mac has no touch screen.
+        #if targetEnvironment(macCatalyst)
+        let scheme: [ControlsRow] = []
+        #else
+        let scheme: [ControlsRow] = [.touchScheme]
+        #endif
+        return scheme + [.tab] + camera + [.targeting, .fireAlsoAims, .sprintButton, .steeringButtons, .airplaneRightStick, .buttonSize, .buttonOpacity,
+                                  .editLayout, .hudLayout, .minimap, .helpText, .safeZone, .hideTouchWithController, .keyboardMouse]
     }
 
     @objc private func controlsTabChanged(_ sender: UISegmentedControl) {
@@ -116,16 +122,10 @@ final class SettingsViewController: UITableViewController {
     private lazy var shown: [Section] = Section.allCases.filter { sections.contains($0) }
     private func sectionKind(_ index: Int) -> Section { shown[index] }
     private func indexOf(_ section: Section) -> Int { shown.firstIndex(of: section) ?? 0 }
-    private func editMinimap() {
-        let editor = MinimapEditorController()
-        editor.modalPresentationStyle = .fullScreen
-        editor.onDone = { [weak self] in self?.reload(.controls) }
-        present(editor, animated: true)
-    }
-    private func editHelpText() {
-        let editor = HelpTextEditorController()
-        editor.modalPresentationStyle = .fullScreen
-        editor.onDone = { [weak self] in self?.reload(.controls) }
+    /// Settings › HUD layout (GTA-197), with a piece chosen (the minimap's and help messages' Custom).
+    private func editHUD(_ piece: HUDPiece? = nil) {
+        let editor = HUDLayoutEditorController(select: piece)
+        editor.onDone = { [weak self] in self?.reload(.controls); self?.controlsChanged?() }
         present(editor, animated: true)
     }
     private func reload(_ section: Section) {
@@ -394,6 +394,23 @@ final class SettingsViewController: UITableViewController {
                     tabs.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -11),
                     tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 34)
                 ])
+            case .touchScheme:
+                content.text = AppLanguage.choose("Touch scheme")
+                content.secondaryText = AppLanguage.choose("Situational changes the buttons with what you're doing. Controller buttons shows every Xbox controller button, all the time.")
+                let button = UIButton(type: .system)
+                button.setTitle(settings.touchScheme.title + " ▾", for: .normal)
+                button.accessibilityLabel = AppLanguage.choose("Touch scheme")
+                button.accessibilityValue = settings.touchScheme.title
+                button.showsMenuAsPrimaryAction = true
+                button.menu = UIMenu(children: GameSettings.TouchScheme.allCases.map { scheme in
+                    UIAction(title: scheme.title, state: scheme == settings.touchScheme ? .on : .off) { [weak self] _ in
+                        self?.settings.touchScheme = scheme
+                        self?.controlsChanged?()
+                        UIView.performWithoutAnimation { self?.reload(.controls) }
+                    }
+                })
+                button.sizeToFit()
+                cell.accessoryView = button
             case .swipeLook:
                 let mouse = settings.cameraTouchMode == .swipeMouse
                 let value = mouse ? settings.mouseLookSensitivity : settings.swipeLookSensitivity
@@ -479,7 +496,7 @@ final class SettingsViewController: UITableViewController {
                 button.menu = UIMenu(children: GameSettings.MinimapPlace.allCases.map { place in
                     UIAction(title: place.title, state: place == settings.minimapPlace ? .on : .off) { [weak self] _ in
                         guard let self else { return }
-                        if place == .custom { self.editMinimap() } else { self.settings.minimapPlace = place; self.reload(.controls) }
+                        if place == .custom { self.editHUD(.minimap) } else { self.settings.minimapPlace = place; self.reload(.controls) }
                     }
                 })
                 button.sizeToFit()
@@ -496,12 +513,18 @@ final class SettingsViewController: UITableViewController {
                 button.menu = UIMenu(children: GameSettings.HelpTextPlace.allCases.map { place in
                     UIAction(title: place.title, state: place == settings.helpTextPlace ? .on : .off) { [weak self] _ in
                         guard let self else { return }
-                        if place == .custom { self.editHelpText() } else { self.settings.helpTextPlace = place; self.reload(.controls) }
+                        if place == .custom { self.editHUD(.helpText) } else { self.settings.helpTextPlace = place; self.reload(.controls) }
                     }
                 })
                 button.sizeToFit()
                 cell.accessoryView = button
                 cell.selectionStyle = .none
+            case .hudLayout:
+                content.text = AppLanguage.choose("HUD layout")
+                content.secondaryText = settings.hudLayoutCustomized ? AppLanguage.choose("Customized")
+                    : AppLanguage.choose("Move the character wheel, FPS counter, map and other HUD pieces")
+                content.textProperties.color = .systemBlue
+                cell.selectionStyle = .default
             case .editLayout:
                 content.text = AppLanguage.choose("Edit controls layout")
                 content.secondaryText = ControlsLayout.isCustomized ? AppLanguage.choose("Customized") : AppLanguage.choose("Move, resize or hide buttons")
@@ -726,6 +749,8 @@ final class SettingsViewController: UITableViewController {
         if sectionKind(indexPath.section) == .device, indexPath.row == 3 { UIApplication.shared.open(Theme.telegramURL); return }
         if sectionKind(indexPath.section) == .controls,
            controlsRows[indexPath.row] == .editLayout { editLayout?(); return }
+        if sectionKind(indexPath.section) == .controls,
+           controlsRows[indexPath.row] == .hudLayout { editHUD(); return }
         if sectionKind(indexPath.section) == .cheats, indexPath.row == 0 {
             let page = VehicleSpawnViewController()
             page.vehicleSelected = vehicleSelected
@@ -954,7 +979,7 @@ final class SettingsViewController: UITableViewController {
     /// keyboard never covers Send in landscape).
     private func sendLog() {
         let screen = SendLogViewController()
-        screen.finished = { [weak self] title, message in self?.showAlert(title, message) }
+        screen.finished = { [weak self] title, message in self?.present(LogUploader.resultAlert(title, message), animated: true) }
         let nav = UINavigationController(rootViewController: screen)
         nav.modalPresentationStyle = .fullScreen
         present(nav, animated: true)
