@@ -1,9 +1,9 @@
 import Foundation
 import UIKit
 
-/// Sends the app's logs to the developer (the website, which forwards them on Telegram).
+/// Sends the app's logs to the developer (fivestarport.site/api/log, which forwards them on Telegram; GTA-240).
 enum LogUploader {
-    static let endpoint = URL(string: "https://fivestarport.vercel.app/api/log")!
+    static let endpoint = URL(string: "https://fivestarport.site/api/log")!
     /// The site accepts up to 4 MB, so each log is trimmed to 1.8 MB: its start (device, settings,
     /// game files) and its end (where it stopped or crashed).
     private static let perLog = 1_800_000

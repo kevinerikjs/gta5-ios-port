@@ -99,7 +99,9 @@ struct DeviceTier {
         return false
     }
 
-    static func probe() -> DeviceTier {
+    /// capMB: Settings › Memory cap (or -memoryCapMB for one launch), 0 for none. A cap lowers the limit the app plans
+    /// with too, so a test phone with more memory takes the small-memory paths of the phone it stands in for (GTA-241).
+    static func probe(capMB: Int = 0) -> DeviceTier {
         var info = utsname(); uname(&info)
         var model = withUnsafeBytes(of: &info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
         #if targetEnvironment(macCatalyst)
@@ -111,7 +113,8 @@ struct DeviceTier {
         }
         #endif
         let device = MTLCreateSystemDefaultDevice()
-        return DeviceTier(memoryLimitMB: Self.processMemoryLimitMB(),
+        let limit = Self.processMemoryLimitMB()
+        return DeviceTier(memoryLimitMB: capMB > 0 ? min(limit, capMB) : limit,
                           physicalMemoryMB: Int(ProcessInfo.processInfo.physicalMemory / 1_048_576),
                           model: model,
                           supportsBCTextures: Self.readsBC(device))
@@ -133,10 +136,13 @@ struct DeviceTier {
         #endif
     }
 
-    /// The Metal renderer needs about 700 MB less than the old renderer did: a 6 GB phone on a
-    /// free Apple ID (about 3 GB limit) runs Battery with room to spare.
+    /// The Metal renderer needs about 700 MB less than the old renderer did. Limits of 2,600-3,400 MB (6 GB phones on
+    /// a free Apple ID) got Battery until v1.5.2; Performance has the same engine options at 540 instead of 432 lines,
+    /// and play stats show no cost there (GTA-242, iPhones, 2026-10-17 to 27, sessions of 3 minutes or more):
+    /// Performance 1,343 sessions, 5% under 25 FPS, 3% thermal critical; Battery 13,069 sessions, 7% and 4%.
+    /// The other bands match their stats: at 3,400-4,600 Balanced and above cost a lot (Quality 44% under 25 FPS).
     var recommended: GraphicsPreset {
-        let byMemory: GraphicsPreset = GraphicsPreset.liteAvailable && memoryLimitMB < 2600 ? .lite : memoryLimitMB < 3400 ? .battery : memoryLimitMB < 4600 ? .performance : memoryLimitMB < 6000 ? .balanced : memoryLimitMB < 8000 ? .quality : .ultra
+        let byMemory: GraphicsPreset = GraphicsPreset.liteAvailable && memoryLimitMB < 2600 ? .lite : memoryLimitMB < 4600 ? .performance : memoryLimitMB < 6000 ? .balanced : memoryLimitMB < 8000 ? .quality : .ultra
         guard var ceiling = Self.heatCeiling[model] else { return byMemory }
         if ceiling == .lite && !GraphicsPreset.liteAvailable { ceiling = .battery }
         return byMemory.rawValue > ceiling.rawValue ? ceiling : byMemory
@@ -147,8 +153,15 @@ struct DeviceTier {
     ///   Performance, which also averaged more FPS (31.2 against 28.9). Rendering fewer pixels (Battery) didn't
     ///   help; Ultra Performance's shorter range cuts the world's CPU and memory work, where the heat comes from.
     /// - iPhone 12 Pro: 26% on Performance, 14% on Battery (and 15% on Ultra Performance), so Battery at most.
-    /// Their 4 GB siblings already get Ultra Performance from the memory rule.
+    /// Their 4 GB siblings already get Ultra Performance from the memory rule. Rechecked for v1.5.2 (GTA-242, 2026-10-17
+    /// to 27, presets with 150 sessions or more): no other iPhone reaches critical in 15% of its sessions above its
+    /// lowest preset (iPhone 11 Pro Max 16% and 15 Pro 15% only on Ultra Performance itself), so the table stays.
     static let heatCeiling: [String: GraphicsPreset] = ["iPhone13,4": .lite, "iPhone13,3": .battery]
+    /// 4 GB iPhones (an app limit under 2,600 MB): Ultra Performance's memory settings and resolution on every preset (GTA-241).
+    /// Above it, Performance at 2,098 MB evicted and reloaded textures about 20,000 times a minute and the road
+    /// vanished under the car (Kevin's iPhone at a 2,098 MB cap, 2026-10-27); 27% of these phones' sessions in the
+    /// last 10 days ran a preset above Ultra Performance.
+    var lowMemory: Bool { GraphicsPreset.liteAvailable && memoryLimitMB < 2600 }
     /// Every preset can be chosen; those above the recommended one show a warning.
     var allowed: [GraphicsPreset] { GraphicsPreset.available }
     /// Presets shown with a warning because they may run out of memory or heat up.
@@ -207,6 +220,10 @@ enum GraphicsConfiguration {
     static func size(for preset: GraphicsPreset, renderHeight: Int, screen: CGSize, matchScreenShape: Bool) -> (Int, Int) {
         let aspect = matchScreenShape && screen.height > 0 ? max(screen.width, screen.height) / min(screen.width, screen.height) : 16.0 / 9.0
         var height = Double(renderHeight > 0 ? renderHeight : preset.height)
+        // 4 GB iPhones render at Ultra Performance's height on every preset too (GTA-241). Kevin's iPhone at a 2,098 MB
+        // cap, the benchmark, 2 runs each: Performance at 540 lines asked to evict 38-41 times and drew flat untextured
+        // buildings at the same moments where 432 lines asked 13-14 times and drew the street (phone-perf/shots-1028-0342).
+        if preset != .lite && GameSettings.shared.tier.lowMemory { height = min(height, Double(GraphicsPreset.lite.height)) }
         height = min(max(height, 360), Double(max(nativeHeight, 720)))
         let width = min(height * aspect, 3840)
         func even(_ value: Double) -> Int { Int(value.rounded()) & ~1 }
@@ -219,13 +236,17 @@ enum GraphicsConfiguration {
         let (width, height) = size(for: preset, renderHeight: settings.renderHeight, screen: screen, matchScreenShape: tv || settings.matchScreenShape)
         // The player's own details replace the preset's (GTA-84).
         let overrides = settings.graphicsOverrides
+        // 4 GB iPhones keep Ultra Performance's memory settings whatever the preset (GTA-241): Lite's half-size
+        // textures and shorter range, the settings below, and the lowest texture set, even as the player's own detail.
+        let lowMemory = settings.tier.lowMemory
         let options = preset.engineOptions.map { option -> String in
             let name = String(option.dropFirst().prefix { $0 != "=" })
+            if lowMemory && name == "textureQuality" { return "-textureQuality=0" }
             return overrides[name].map { "-\(name)=\($0)" } ?? option
         }
         let own = GraphicsDetail.all.compactMap { detail in overrides[detail.option].map { "\(detail.option) \($0)" } }
         // The engine and renderer read PG_LITE when they start, after this. The Lite build always sets it.
-        if preset == .lite { setenv("PG_LITE", "1", 1) } else if !Theme.isLite { unsetenv("PG_LITE") }
+        if preset == .lite || lowMemory { setenv("PG_LITE", "1", 1) } else if !Theme.isLite { unsetenv("PG_LITE") }
         // The smallest memory limits (4 GB iPhones: about 2.1 GB for the app) can't hold the city at Lite's usual
         // detail: the engine evicted what it needed a moment later, re-read the same files hundreds of times and
         // the ground stayed grey. There Lite draws detail closer and places fewer people and cars, and what was
@@ -238,10 +259,23 @@ enum GraphicsConfiguration {
         // 241-274 MB per interval instead of 272-351, for 15-20 MB less texture memory. "Lighter big textures" in This
         // device › Experimental turns it off along with the other big-texture cut.
         // Switches already set (tests) win.
-        if preset == .lite || Theme.isLite, settings.tier.memoryLimitMB < 2600, settings.steadyCityLowMemory {
+        if preset == .lite || Theme.isLite || lowMemory, settings.tier.memoryLimitMB < 2600, settings.steadyCityLowMemory {
             var values = [("PG_LITE_LOD", "0.4"), ("PG_LITE_DENSITY", "0.25"), ("PG_EVICT_PROTECT_MS", "4000")]
             if settings.lighterBigTextures { values.append(("PG_LITE_BIG_MIP_SKIP", "512")) }
             for (name, value) in values where getenv(name) == nil {
+                setenv(name, value, 1)
+            }
+        }
+        // 4 GB iPhones (under 2,600 MB, GTA-241): the memory guard keeps 192 MB free instead of 384, and the three
+        // smaller GTA-217 memory cuts are on there: one engine function table for all threads (about 76 MB), freed
+        // engine blocks handed back from 16 KB, BC block copies only for textures of 4,096 texels or fewer. At 2,098 MB
+        // the 384 MB reserve meant "evict" above 1,714 MB, below what the city needs, so the engine evicted and
+        // reloaded all the time and the ground vanished. Lab simulator, 2,098 MB, Ultra Performance with GTA-148's
+        // settings, the benchmark: evict asks 172 per 10 s instead of 2,600, files loaded twice as often, and a lower
+        // footprint and peak than before. Switches already set (tests) win.
+        if settings.tier.lowMemory {
+            for (name, value) in [("PG_GUARD_RESERVE_MB", "192"), ("PG_SHARED_TABLES", "1"), ("PG_HEAP_RETURN_MIN_KB", "16"), ("PG_BC_COPY_TEXELS", "4096")]
+            where getenv(name) == nil {
                 setenv(name, value, 1)
             }
         }
@@ -256,5 +290,6 @@ enum GraphicsConfiguration {
             }
         }
         return "\(preset.title) \(width)×\(height) at \(GameSettings.frameRateTitle(settings.frameRateCap))" + (own.isEmpty ? "" : ", own settings: " + own.joined(separator: ", "))
+            + (lowMemory && preset != .lite ? ", with Ultra Performance's memory settings (under 2,600 MB)" : "")
     }
 }

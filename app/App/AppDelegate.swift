@@ -8,6 +8,24 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // The Lite build (PGLiteMode in Info.plist, build_ipa.sh --lite): the engine and renderer read PG_LITE.
         if Theme.isLite && getenv("PG_LITE") == nil { setenv("PG_LITE", "1", 1) }
         GameSettings.applyExperimentalSwitches()
+        // Test (GTA-77): PG_TEST_COLD_SHADERS=1 deletes the system's compiled-shader cache for this app first (every
+        // "com.apple.metal" folder in Library/Caches, two levels deep), so the launch compiles every pipeline again, as
+        // the first launch after an update that changed the shaders does.
+        if ProcessInfo.processInfo.environment["PG_TEST_COLD_SHADERS"] == "1",
+           let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            var deleted: [String] = []
+            let fm = FileManager.default
+            for level1 in (try? fm.contentsOfDirectory(atPath: caches.path)) ?? [] {
+                let path1 = caches.appendingPathComponent(level1)
+                if level1 == "com.apple.metal" { try? fm.removeItem(at: path1); deleted.append(level1); continue }
+                for level2 in (try? fm.contentsOfDirectory(atPath: path1.path)) ?? [] where level2 == "com.apple.metal" {
+                    try? fm.removeItem(at: path1.appendingPathComponent(level2)); deleted.append(level1 + "/" + level2)
+                }
+            }
+            let names = ((try? fm.contentsOfDirectory(atPath: caches.path)) ?? []).joined(separator: ", ")
+            let mine = ((try? fm.contentsOfDirectory(atPath: caches.appendingPathComponent(Bundle.main.bundleIdentifier ?? "").path)) ?? []).joined(separator: ", ")
+            setenv("PG_TEST_COLD_SHADERS_RESULT", (deleted.isEmpty ? "not found" : "deleted " + deleted.joined(separator: ", ")) + " (Library/Caches holds: \(names); its app folder holds: \(mine))", 1)   // the renderer logs it
+        }
         ModInstaller.applyPending()
         ModKeyRemap.apply()  // keys that answer a mod's own key (GTA-181), before the mods load
         #if targetEnvironment(simulator)

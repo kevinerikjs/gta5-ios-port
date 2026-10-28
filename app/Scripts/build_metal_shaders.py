@@ -12,7 +12,7 @@ Outputs (GeneratedResources/, bundled by project.yml):
 
 Usage: build_metal_shaders.py <shader dir> [--sdk iphoneos|iphonesimulator ...]
 """
-import argparse, concurrent.futures, json, os, shutil, subprocess, sys, tempfile
+import argparse, concurrent.futures, json, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.path.join(ROOT, 'Build', 'MetalShaders')
@@ -41,6 +41,58 @@ def compile_batch(sdk, compiler, sources, air):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# GTA-77: every pixel shader cleans its colour outputs of NaN and infinity where the renderer asks (pg_nanc, buffer 30:
+# a mask of outputs, a zero the compiler can't see, then each target's largest finite value as float bits). The renderer
+# asks for RG11B10 and RGB9E5 targets (MRRenderer.mm, ensurePass; PG_NAN_CLAMP_OLD=1 never asks). The shaders are compiled
+# with -ffast-math, where isnan() may fold to false, so the test works on the bits, xor'ed with the hidden zero: NaN
+# becomes 0, infinity and anything past the format's largest value become that value, and the sign stays.
+# PG_NO_SHADER_NAN_CLAMP=1 builds the library without it (the renderer then has nothing to switch).
+NANC_BUFFER = 30
+NANC_HELPERS = '''
+static inline uint pg_nanc_bits(uint u, uint maxbits) { uint m = u & 0x7fffffffu; m = m > 0x7f800000u ? 0u : min(m, maxbits); return (u & 0x80000000u) | m; }
+static inline float pg_nanc_clean(float v, uint salt, uint maxbits) { return as_type<float>(pg_nanc_bits(as_type<uint>(v) ^ salt, maxbits)); }
+static inline float2 pg_nanc_clean(float2 v, uint salt, uint maxbits) { uint2 u = as_type<uint2>(v) ^ salt; return as_type<float2>(uint2(pg_nanc_bits(u.x, maxbits), pg_nanc_bits(u.y, maxbits))); }
+static inline float3 pg_nanc_clean(float3 v, uint salt, uint maxbits) { return float3(pg_nanc_clean(v.x, salt, maxbits), pg_nanc_clean(v.y, salt, maxbits), pg_nanc_clean(v.z, salt, maxbits)); }
+static inline float4 pg_nanc_clean(float4 v, uint salt, uint maxbits) { uint4 u = as_type<uint4>(v) ^ salt; return as_type<float4>(uint4(pg_nanc_bits(u.x, maxbits), pg_nanc_bits(u.y, maxbits), pg_nanc_bits(u.z, maxbits), pg_nanc_bits(u.w, maxbits))); }
+'''
+
+
+def add_nan_clamp(text, h):
+    """The pixel shader's MSL with the clean at its return, or None when it has no float colour output."""
+    m = re.search(r'\nfragment (\S+) s_' + h + r'\((.*)\) \{\n', text)
+    if not m or m.group(1) == 'void':
+        return None
+    sm = re.search(r'\nstruct ' + re.escape(m.group(1)) + r' \{\n(.*?)\n\};', text, re.S)
+    if not sm:
+        return None
+    outs = []
+    for line in sm.group(1).split('\n'):
+        mm = re.match(r'\s*(float|float2|float3|float4) (\w+) \[\[color\((\d+)\)\]\];$', line)
+        if mm and int(mm.group(3)) < 8:
+            outs.append((mm.group(2), int(mm.group(3))))
+    if not outs:
+        return None
+    body_at = m.end()
+    ret = re.compile(r'\n(\s*)return ([^;]+);').search(text, body_at)
+    if not ret or '\nfragment ' in text[body_at:ret.start()]:
+        return None
+    ind = ret.group(1)
+    clean = [ind + 'if (pg_nanc[0] != 0u) {']
+    for member, k in outs:
+        clean.append('%s  if ((pg_nanc[0] & %du) != 0u) pg_out.%s = pg_nanc_clean(pg_out.%s, pg_nanc[1], pg_nanc[%d]);' % (ind, 1 << k, member, member, 4 + k))
+    clean.append(ind + '}')
+    new_ret = '\n%s%s pg_out = %s;\n%s\n%sreturn pg_out;' % (ind, m.group(1), ret.group(2), '\n'.join(clean), ind)
+    params = m.group(2)
+    param = 'const constant uint* pg_nanc [[buffer(%d)]]' % NANC_BUFFER
+    sig = '\nfragment %s s_%s(%s%s) {\n' % (m.group(1), h, params + ', ' if params.strip() else '', param)
+    out = text[:m.start()] + sig + text[m.end():ret.start()] + new_ret + text[ret.end():]
+    ns = 'namespace n_%s {\n' % h
+    at = out.find(ns)
+    if at < 0:
+        return None
+    return out[:at + len(ns)] + NANC_HELPERS + out[at + len(ns):]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('shaders')
@@ -65,6 +117,29 @@ def main():
     if r.returncode:
         sys.exit(r.stderr)
 
+    # GTA-77: pixel shaders with the NaN/infinity clean go to msl-nanc/ (written only when changed, so unchanged shaders
+    # keep their compiled AIR); the others compile from msl/ as translated.
+    nanc_dir = os.path.join(WORK, 'msl-nanc')
+    os.makedirs(nanc_dir, exist_ok=True)
+    sources, cleaned = {}, set()
+    for line in open(reflection):
+        o = json.loads(line)
+        h = o['h']
+        src = os.path.join(msl, h + '.metal')
+        sources[h] = src
+        if o['st'] != 'ps' or os.environ.get('PG_NO_SHADER_NAN_CLAMP') == '1':
+            continue
+        patched = add_nan_clamp(open(src).read(), h)
+        if patched is None:
+            continue
+        dst = os.path.join(nanc_dir, h + '.metal')
+        if not (os.path.exists(dst) and open(dst).read() == patched):
+            with open(dst, 'w') as f:
+                f.write(patched)
+        sources[h] = dst
+        cleaned.add(h)
+    print('NaN/infinity clean (GTA-77): %d pixel shaders' % len(cleaned))
+
     # reflection + labels + constant tables (binding 15: one u32 per 16-byte row)
     with open(os.path.join(OUT, 'shader-reflection.jsonl'), 'w') as out:
         for line in open(reflection):
@@ -73,6 +148,8 @@ def main():
             o['label'] = rec.get('effect', '?') + '::' + rec.get('program', '?')
             if rec.get('consts'):
                 o['k'] = json.load(open(os.path.join(args.shaders, o['h'] + '.consts.json')))
+            if o['h'] in cleaned:
+                o['nc'] = 1
             out.write(json.dumps(o, separators=(',', ':')) + '\n')
 
     hashes = [json.loads(l)['h'] for l in open(reflection)]
@@ -82,9 +159,13 @@ def main():
         compiler = subprocess.run(['xcrun', '-sdk', TOOL_SDK.get(sdk, sdk), '-f', 'metal'], capture_output=True, text=True).stdout.strip()
         stale = []
         for h in hashes:
-            src, dst = os.path.join(msl, h + '.metal'), os.path.join(air, h + '.air')
-            if not (os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(src)):
+            src, dst = sources[h], os.path.join(air, h + '.air')
+            # a shader that moved between msl/ and msl-nanc/ compiles again even if its AIR is newer than the source
+            mark = dst + '.from'
+            if not (os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(src) and os.path.exists(mark) and open(mark).read() == src):
                 stale.append(src)
+                with open(mark, 'w') as f:
+                    f.write(src)
         batches = [stale[i:i + 48] for i in range(0, len(stale), 48)]
         failed = 0
         with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 8) as pool:

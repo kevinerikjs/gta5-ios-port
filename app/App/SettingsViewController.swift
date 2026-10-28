@@ -205,6 +205,7 @@ final class SettingsViewController: UITableViewController {
             }
             if settings.graphicsPreset != bootPreset && engineRunning { text += AppLanguage.interpolate(AppLanguage.choose(" Restart needed for {arg0}."), [String(describing: settings.graphicsPreset.title)]) }
             if settings.tier.risky(settings.graphicsPreset) { text += AppLanguage.choose(" Presets above the recommended one can run out of memory or overheat on this phone; if a launch fails, the game falls back automatically.") }
+            if settings.tier.lowMemory && settings.graphicsPreset != .lite { text += AppLanguage.choose(" On this iPhone every preset keeps Ultra Performance's resolution, textures and draw distance, so the world keeps loading.") }
             return text
         case .controls:
             return AppLanguage.choose("Switching tabs changes the camera control and the settings below. It does not force GTA V's in-game button prompt icons.")
@@ -319,10 +320,22 @@ final class SettingsViewController: UITableViewController {
                         self?.settings.sharperUpscaling = $0
                     }
                 } else if row == 3 {
+                    // Off, the frame rate, or the frame rate with CPU power, busy cores and the heat state (GTA-216).
                     content.text = AppLanguage.choose("Show FPS counter")
-                    cell.accessoryView = toggle(settings.showFPS, label: AppLanguage.choose("Show FPS counter")) { [weak self] in
-                        self?.settings.showFPS = $0
-                    }
+                    let choices = [(AppLanguage.choose("Off"), false, false), (AppLanguage.choose("FPS"), true, false), (AppLanguage.choose("FPS and heat"), true, true)]
+                    let current = choices.firstIndex { $0.1 == settings.showFPS && (!$0.1 || $0.2 == settings.showPower) } ?? 1
+                    if settings.showFPS && settings.showPower { content.secondaryText = AppLanguage.choose("Watts: the CPU's power. Cores: how many CPU cores the game keeps busy. Then the iPhone's heat state.") }
+                    let button = UIButton(type: .system)
+                    button.setTitle(choices[current].0 + " ▾", for: .normal)
+                    button.showsMenuAsPrimaryAction = true
+                    button.accessibilityLabel = AppLanguage.choose("Show FPS counter")
+                    button.menu = UIMenu(children: choices.enumerated().map { index, choice in
+                        UIAction(title: choice.0, state: index == current ? .on : .off) { [weak self] _ in
+                            self?.settings.showFPS = choice.1; self?.settings.showPower = choice.2; self?.tableView.reloadData()
+                        }
+                    })
+                    button.sizeToFit()
+                    cell.accessoryView = button
                 } else if row == 5 {
                     content.text = AppLanguage.choose("Memory cap")
                     content.secondaryText = AppLanguage.choose("The most memory the game may use. Lower it if the game closes on its own. Applies when you press Play.")
@@ -680,7 +693,7 @@ final class SettingsViewController: UITableViewController {
                     (AppLanguage.choose("Faster engine threads"), AppLanguage.choose("Experimental. Keeps the game on the fast processor cores for steadier FPS. Turn off if your iPhone gets too hot."), \.fastEngineThreads),
                     (AppLanguage.choose("Compressed see-through textures"), AppLanguage.choose("Experimental. On iPhones before the 15 Pro, leaves, fences, smoke and decals use a quarter of the memory, so more of the world stays sharp. Turn off if soft see-through edges show steps."), \.compressedAlphaTextures),
                     (AppLanguage.choose("Steady city on low memory"), AppLanguage.choose("Experimental. On iPhones that give the game about 2 GB (the 4 GB models), Ultra Performance draws detail closer and places fewer people and cars, so the ground and roads load instead of staying grey. Turn off for more detail."), \.steadyCityLowMemory),
-                    (AppLanguage.choose("Lighter 3D models in memory"), AppLanguage.choose("Experimental, on by default on 4 GB iPhones. The game keeps a second copy of every 3D model after the GPU has it; this hands about 80 MB of it back to iOS. Turn off if the game crashes more often."), \.meshMemoryRelease),
+                    (AppLanguage.choose("Lighter 3D models in memory"), AppLanguage.choose("Experimental, on by default on iPhones and 8 GB Macs. The game keeps a second copy of every 3D model after the GPU has it; this hands most of that copy back to iOS, a few hundred MB. Turn off if the game crashes more often."), \.meshMemoryRelease),
                     (AppLanguage.choose("More engine memory"), AppLanguage.choose("Experimental, off by default. Gives the game about 270 MB more room inside its 4 GB, for fewer stops after long play on 6-8 GB iPhones. Turn off if the game stops more often."), \.smallerEngineHeaps),
                 ]
                 let (title, detail, key) = rows[indexPath.row - 4]

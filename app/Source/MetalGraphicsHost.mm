@@ -9,6 +9,9 @@ extern "C" void pg_log(const char *);
 void PGAttachMetalLayer(void *layer) { PGMetalRendererAttachLayer(layer); }
 double PGRenderedFramesPerSecond(void) { return PGMetalRendererFPS(); }
 void PGCaptureNativeFrame(const char *name) { PGMetalRendererCapture(name); }
+void PGQueueTestShot(const char *name, int stripLists, int nanClamp) { PGMetalRendererQueueShot(name, stripLists, nanClamp); }
+int PGTestShotsPending(void) { return PGMetalRendererShotsPending(); }
+void PGRenderFixes(int *stripLists, int *nanClamp) { PGMetalRendererFixes(stripLists, nanClamp); }
 void PGSetSharperUpscaling(int on) { PGMetalRendererSetUpscaling(on); }
 void PGSetPresentInterval(double seconds) { PGMetalRendererSetPresentInterval(seconds); }
 void PGShownFrameStats(double *perSecond, double *fastGapMs, double *medianGapMs, uint32_t *notShown) { PGMetalRendererShownStats(perSecond, fastGapMs, medianGapMs, notShown); }

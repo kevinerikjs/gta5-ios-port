@@ -16,6 +16,11 @@ void PGMetalRendererSetPresentInterval(double seconds);
 // Pictures shown on screen since the last call (GTA-200): per second, the fastest 5% and the median gap between two, and
 // how many never showed.
 void PGMetalRendererShownStats(double *perSecond, double *fastGapMs, double *medianGapMs, uint32_t *notShown);
+// GTA-77 tests: queue a picture drawn with these settings (strips as lists 0/1, NaN clamp 0 off / 1 packed targets /
+// 2 every float target), how many are waiting, and what the launch chose (PG_STRIP_LISTS_OLD, PG_NAN_CLAMP_OLD).
+void PGMetalRendererQueueShot(const char *name, int stripLists, int nanClamp);
+int PGMetalRendererShotsPending(void);
+void PGMetalRendererFixes(int *stripLists, int *nanClamp);
 #ifdef __cplusplus
 }
 #endif

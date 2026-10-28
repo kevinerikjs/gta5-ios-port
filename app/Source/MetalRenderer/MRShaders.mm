@@ -33,6 +33,7 @@ void logOnce(const std::string &key, const char *format, ...) {
 
 // ---- shader library ---------------------------------------------------------------------------------------------------
 static id<MTLLibrary> library;
+uint32_t gNanClampShaders = 0;
 static std::unordered_map<std::string, std::unique_ptr<ShaderInfo>> shaders;
 
 static ResKind resKind(NSString *k) {
@@ -112,6 +113,8 @@ bool loadShaderLibrary(id<MTLDevice> device) {
 		info->vid = [o[@"vid"] boolValue];
 		info->iid = [o[@"iid"] boolValue];
 		info->immediate = [o[@"imm"] boolValue];
+		info->nanClamp = [o[@"nc"] boolValue];
+		if (info->nanClamp) gNanClampShaders++;
 		for (NSArray *a in o[@"alen"]) info->arrayLengths.push_back({[a[0] unsignedIntValue], [a[1] unsignedIntValue]});
 		for (NSNumber *n in o[@"k"]) info->consts.push_back((uint32_t)n.unsignedLongLongValue);
 		info->uid = uid++;
@@ -154,6 +157,7 @@ bool gNativeBC = false;
 bool gPackedBC1 = false;
 bool gASTCBC1 = false;
 bool gASTCBC3 = false;
+bool gETCBC = false;
 bool gSkipTopMip = false;
 uint64_t gSkipBigTopMip = 0;
 
@@ -223,6 +227,12 @@ FormatInfo mapFormat(uint32_t f, uint32_t bind) {
 		default: m.format = m.srgb ? MTLPixelFormatBC7_RGBAUnorm_sRGB : MTLPixelFormatBC7_RGBAUnorm; m.alt = m.srgb ? MTLPixelFormatBC7_RGBAUnorm : MTLPixelFormatBC7_RGBAUnorm_sRGB;
 		}
 	} else if (m.bc) {		// decoded on the CPU to an uncompressed format
+		if (gETCBC && (m.bc == 1 || m.bc == 4 || m.bc == 5)) {		// re-encoded as ETC2/EAC at the BC size (GTA-217)
+			m.etc = true;
+			if (m.bc == 1) { m.format = m.srgb ? MTLPixelFormatETC2_RGB8_sRGB : MTLPixelFormatETC2_RGB8; m.alt = m.srgb ? MTLPixelFormatETC2_RGB8 : MTLPixelFormatETC2_RGB8_sRGB; }
+			else m.format = m.bc == 4 ? MTLPixelFormatEAC_R11Unorm : MTLPixelFormatEAC_RG11Unorm;
+			return m;
+		}
 		if ((m.bc == 1 || (m.bc == 3 && gASTCBC3)) && gASTCBC1) {
 			m.astc = true;
 			m.format = m.srgb ? MTLPixelFormatASTC_4x4_sRGB : MTLPixelFormatASTC_4x4_LDR;

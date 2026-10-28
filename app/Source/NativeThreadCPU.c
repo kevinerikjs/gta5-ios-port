@@ -37,11 +37,12 @@ static void groupName(thread_t port, char *out) {
 }
 
 static void startProfiler(void);
+void PGPerfCountersStart(void);	// NativePerfCounters.m: instructions, cycles and energy per frame (GTA-216)
 
 size_t PGThreadCPU(char *out, size_t size) {
   if (!size) return 0;
   static int profiling;
-  if (!profiling) { profiling = 1; startProfiler(); }
+  if (!profiling) { profiling = 1; startProfiler(); PGPerfCountersStart(); }
   out[0] = 0;
   thread_act_array_t list; mach_msg_type_number_t count;
   if (task_threads(mach_task_self(), &list, &count) != KERN_SUCCESS) return 0;

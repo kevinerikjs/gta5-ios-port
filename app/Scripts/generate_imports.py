@@ -19,7 +19,8 @@ for module, field, result, name, signature in functions:
     if field.startswith('invoke_'):
         args = types[2:]
         cast = ', '.join(['void *'] + args)
-        actual = ', '.join(['entry.module_instance'] + [f'a{i}' for i in range(2,len(types))])
+        # The caller's instance, not the entry's (the same pointer, unless the table is shared: GTA-217)
+        actual = ', '.join(['&a0->game'] + [f'a{i}' for i in range(2,len(types))])
         wasm_types = {'u32':'WASM_RT_I32', 'u64':'WASM_RT_I64', 'f32':'WASM_RT_F32', 'f64':'WASM_RT_F64'}
         signature_types = args + ([] if result == 'void' else [result])
         expected = ', '.join([str(len(args)), '0' if result == 'void' else '1'] + [wasm_types[t] for t in signature_types])

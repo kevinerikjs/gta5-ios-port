@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+python3 Scripts/prepare_plain_engine.py off   # wasm2c's access names while the patchers below match engine code
 python3 Scripts/prepare_heap_diagnostics.py
 python3 Scripts/prepare_memory_pressure.py
 python3 Scripts/prepare_virtual_pad.py
@@ -33,7 +34,6 @@ python3 Scripts/prepare_fixup_guard.py
 python3 Scripts/prepare_format_strings.py
 python3 Scripts/prepare_video_memory.py
 python3 Scripts/prepare_plain_dsp.py
-python3 Scripts/prepare_plain_engine.py
 python3 Scripts/prepare_cash_stats.py
 python3 Scripts/prepare_native_opus.py
 python3 Scripts/prepare_render_list_guard.py
@@ -62,6 +62,9 @@ python3 Scripts/prepare_memory_file_create.py
 python3 Scripts/prepare_longjmp.py
 python3 Scripts/prepare_trap_guards.py
 python3 Scripts/prepare_stale_cbuffers.py
+python3 Scripts/prepare_plain_engine.py
+python3 Scripts/prepare_memory_base.py
+python3 Scripts/prepare_shared_tables.py
 python3 Scripts/build_opus.py --sdk iphonesimulator
 python3 Scripts/build_blink.py --sdk iphonesimulator
 python3 Scripts/build_metal_shaders.py "${PG_SHADER_DIR:-Build/Inputs/shaders}" --sdk iphonesimulator

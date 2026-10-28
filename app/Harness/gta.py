@@ -321,6 +321,7 @@ def command(words, base="."):
     if not words: return
     verb, rest = words[0], words[1:]
     if verb in ("ping", "state", "ui"): show(call(verb))
+    elif verb == "mem": show(call(" ".join([verb] + rest)))
     elif verb == "n":
         reply = call(native_line(rest))
         print(result_line(reply["results"][0]) if reply.get("ok") else "error: " + reply.get("error", "?"))

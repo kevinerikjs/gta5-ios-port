@@ -196,27 +196,61 @@ uint64_t PGMemoryBudgetClamps(void){return atomic_load(&memoryBudgetClamps);}
 // Apple's malloc does) and marked in use again when a block is handed out. PG_HEAP_RETURN=0 turns it off.
 u64 PG_FN_BUDDY_GET_SIZE(w2c_game*, u64, u64);
 static int heapReturn=-1;
-static _Atomic uint64_t heapReturnedBytes,heapReturnedBlocks;
+static _Atomic uint64_t heapReturnedBytes,heapReturnedBlocks,heapReturnFailedBytes,heapReturnFailedBlocks,heapReuseFailedBytes;
+int PGMeshPageHandedBack(uint64_t offset);	// NativeMeshRelease.c
+uint64_t PGHeapReuseFailedBytes(void){return atomic_load(&heapReuseFailedBytes);}
+// GTA-241: pages mesh release has handed back are protected and already marked reusable. Measured (macOS, same
+// kernel): MADV_FREE_REUSABLE on a range with one protected page fails with EPERM and marks nothing, so a freed block
+// with one of them inside was never returned (rc2 at a 2,098 MB limit: about 180 MB of freed pool memory still
+// counted, so the guard evicted and evicted without the footprint going down). MADV_FREE_REUSE succeeds across them
+// but also clears their reusable mark, so a block handed out again made its handed-back pages count again while still
+// handed back. All three calls now skip the handed-back pages (mesh release keeps those itself) and advise the runs
+// between them.
+// PG_HEAP_RETURN_SKIP_MESH=0 advises the whole range in one call as before (A/B). Returns the bytes advised.
+static uint64_t pg_advise_runs(uint64_t b,uint64_t e,int advice,uint64_t *failed){
+ static int skipMesh=-1;if(skipMesh<0){const char *v=getenv("PG_HEAP_RETURN_SKIP_MESH");skipMesh=!(v&&atoi(v)==0);}
+ const uint64_t page=16384;uint64_t done=0,run=b;
+ for(uint64_t p=b;p<=e;p+=page){
+  if(p<e&&!(skipMesh&&PGMeshPageHandedBack(p)))continue;
+  if(p>run){if(madvise(env.memory.data+run,(size_t)(p-run),advice)==0)done+=p-run;else *failed+=p-run;}
+  run=p+page;
+ }
+ return done;
+}
 static bool heapReturnOn(void){
  if(heapReturn<0){const char *v=getenv("PG_HEAP_RETURN");heapReturn=!(v&&!strcmp(v,"0"));
   if(heapReturn)pg_log("Engine memory: freed blocks go back to iOS.");}
  return heapReturn;
 }
+void PGMeshFreed(uint64_t start,uint64_t size);	// NativeMeshRelease.c: dead mesh pieces in freed memory can go (GTA-217)
 void pg_buddy_free(w2c_game *instance,u64 allocator,u64 block){
- if(!block||!heapReturnOn())return;
+ if(!block)return;
  const uint64_t page=16384,size=PG_FN_BUDDY_GET_SIZE(instance,allocator,block);
- if(size<65536||block+size>env.memory.size)return;
+ PGMeshFreed(block,size);
+ if(!heapReturnOn())return;
+ // Blocks of 64 KB or more by default. PG_HEAP_RETURN_MIN_KB=16 (GTA-217) also returns blocks of one page: in the lab's
+ // 6 GB city drive 1,702 MB returned in 32,056 frees instead of 1,370 MB in 6,135, the pools' freed memory iOS still
+ // counted 0-59 MB instead of 18-88, the same CPU. Kept off for v1.5.2: not cleared by the teleport stress in time.
+ static uint64_t smallest;
+ if(!smallest){const char *v=getenv("PG_HEAP_RETURN_MIN_KB");long kb=v?atol(v):64;smallest=(uint64_t)(kb>=16&&kb<=1024?kb:64)<<10;}
+ if(size<smallest||block+size>env.memory.size)return;
  uint64_t b=(block+page-1)&~(page-1),e=(block+size)&~(page-1);
  if(e<=b)return;
- if(madvise(env.memory.data+b,(size_t)(e-b),MADV_FREE_REUSABLE)==0){atomic_fetch_add(&heapReturnedBytes,e-b);atomic_fetch_add(&heapReturnedBlocks,1);}
+ uint64_t failed=0,returned=pg_advise_runs(b,e,MADV_FREE_REUSABLE,&failed);		// GTA-241: see pg_advise_runs
+ if(returned){atomic_fetch_add(&heapReturnedBytes,returned);atomic_fetch_add(&heapReturnedBlocks,1);}
+ if(failed){atomic_fetch_add(&heapReturnFailedBytes,failed);atomic_fetch_add(&heapReturnFailedBlocks,1);}
 }
+void PGMeshAllocated(uint64_t start,uint64_t size);	// NativeMeshRelease.c (GTA-217)
 void pg_buddy_allocated(w2c_game *instance,u64 block,u64 size){
  (void)instance;
+ if(block&&size)PGMeshAllocated(block,size);
  if(!block||!size||heapReturn!=1)return;
  const uint64_t page=16384;
  uint64_t b=block&~(page-1),e=(block+size+page-1)&~(page-1);
  if(e>env.memory.size)e=env.memory.size;
- if(e>b)madvise(env.memory.data+b,(size_t)(e-b),MADV_FREE_REUSE);
+ uint64_t failed=0;
+ if(e>b)pg_advise_runs(b,e,MADV_FREE_REUSE,&failed);		// GTA-241: see pg_advise_runs
+ if(failed)atomic_fetch_add(&heapReuseFailedBytes,failed);
 }
 // Defragment moves blocks without Allocate: the allocator's whole heap (base +8, size +24) in use first.
 void pg_buddy_defragment(w2c_game *instance,u64 allocator){
@@ -224,7 +258,9 @@ void pg_buddy_defragment(w2c_game *instance,u64 allocator){
  if(heapReturn!=1||allocator+32>env.memory.size)return;
  uint64_t base,size;memcpy(&base,env.memory.data+allocator+8,8);memcpy(&size,env.memory.data+allocator+24,8);
  if(!size||base+size>env.memory.size)return;
- madvise(env.memory.data+base,(size_t)size,MADV_FREE_REUSE);
+ const uint64_t page=16384;uint64_t failed=0;
+ pg_advise_runs(base&~(page-1),(base+size+page-1)&~(page-1),MADV_FREE_REUSE,&failed);
+ if(failed)atomic_fetch_add(&heapReuseFailedBytes,failed);
  static bool logged;if(!logged){logged=true;pg_log("Engine memory: the engine defragments a pool (marked in use first).");}
 }
 // Resident memory per engine pool region and in the rest of the engine heap, plus the D3D layer's
@@ -329,6 +365,17 @@ static _Atomic bool engineLimited;		// the address space holds streaming back wh
 static _Atomic uint64_t poolFreeBytes;
 static _Atomic double poolFailedAt=-1e9;
 static void pg_note_pool_failure(void){atomic_store(&poolFailedAt,timeMS(CLOCK_MONOTONIC));}
+// GTA-217: the whole "[wasm] mem" line and the engine's texture budget, for the memory breakdown (NativeMemoryBreakdown.c).
+#include "NativeMemoryBreakdown.h"
+static double engineMemFields[10];
+static pthread_mutex_t engineMemLock=PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t engineVideoBudgetMB;
+static void pg_note_engine_memory_numbers(const char *line){
+ double f[10]={0};
+ if(sscanf(line,"[wasm] mem: malloc arena %lf MB (in use %lf MB), game virtual %lf/%lf MB, resource virtual %lf/%lf MB, game physical %lf/%lf MB, resource physical %lf/%lf MB",
+   &f[0],&f[1],&f[2],&f[3],&f[4],&f[5],&f[6],&f[7],&f[8],&f[9])<2)return;
+ pthread_mutex_lock(&engineMemLock);memcpy(engineMemFields,f,sizeof f);pthread_mutex_unlock(&engineMemLock);
+}
 static void pg_note_engine_memory(const char *line){
  const char *at=line;
  double arena=0,inUse=0,gameUsed=0,gameSize=0,poolUsed=0,poolSize=0;
@@ -337,6 +384,20 @@ static void pg_note_engine_memory(const char *line){
  atomic_store(&engineSizeAtSample,env.memory.size);
  atomic_store(&engineInUseBytes,(uint64_t)(inUse*1048576.0));
  atomic_store(&poolFreeBytes,fields==6&&poolSize>poolUsed?(uint64_t)((poolSize-poolUsed)*1048576.0):0);
+ pg_note_engine_memory_numbers(line);
+}
+void PGEngineMemoryReport(PGEngineMemoryNumbers *out){
+ memset(out,0,sizeof *out);
+ out->base=(uint64_t)(uintptr_t)env.memory.data;out->size=env.memory.size;out->capacity=env.memory.max_pages*env.memory.page_size;
+ int n=atomic_load(&engineRegionCount);if(n>64)n=64;out->regionCount=n;
+ for(int i=0;i<n;i++){out->regionBase[i]=engineRegions[i].base;out->regionBytes[i]=engineRegions[i].bytes;}
+ double f[10];pthread_mutex_lock(&engineMemLock);memcpy(f,engineMemFields,sizeof f);pthread_mutex_unlock(&engineMemLock);
+ out->arenaMB=f[0];out->inUseMB=f[1];out->gameVirtualUsedMB=f[2];out->gameVirtualMB=f[3];out->resourceVirtualUsedMB=f[4];out->resourceVirtualMB=f[5];
+ out->gamePhysicalUsedMB=f[6];out->gamePhysicalMB=f[7];out->resourcePhysicalUsedMB=f[8];out->resourcePhysicalMB=f[9];
+ out->returnedBytes=atomic_load(&heapReturnedBytes);out->returnedFrees=atomic_load(&heapReturnedBlocks);
+ out->failedBytes=atomic_load(&heapReturnFailedBytes);out->failedFrees=atomic_load(&heapReturnFailedBlocks);out->reuseFailedBytes=atomic_load(&heapReuseFailedBytes);
+ if(env.memory.data&&8324232<=env.memory.size){memcpy(&out->d3dCopyBytes,(const uint8_t *)env.memory.data+8324208,8);memcpy(&out->d3dCopies,(const uint8_t *)env.memory.data+8324216,8);}
+ out->videoBudgetMB=atomic_load(&engineVideoBudgetMB);out->limitMB=processLimitMB;
 }
 static uint64_t engineAddressHeadroom(void){
  // Until the engine's first report there's no limit: the heap starts at 3328 MB, mostly unused.
@@ -527,6 +588,7 @@ u64 pg_video_memory(u64 reported){
   if(mb<640)mb=640;
  }
  if(!mb||(mb<<20)>=reported)return reported;
+ atomic_store(&engineVideoBudgetMB,mb);
  char line[200];snprintf(line,sizeof line,"Video memory for the engine: %llu MB (memory limit %llu MB, textures x%.2f, %s).",(unsigned long long)mb,(unsigned long long)processLimitMB,PGTextureRatioPercent()/100.0,PGGPUReadsBC()?"GPU reads BC textures":"BC textures decoded");pg_log(line);
  return mb<<20;
 }
@@ -1189,6 +1251,8 @@ u32 PG_FN_PRELOAD_MOVIE(w2c_game*, u64, u64); // CMovieMgr::PreloadMovie
 void PG_FN_PLAY_MOVIE(w2c_game*, u32); // CMovieMgr::Play
 // Test (PG_TEST_TELEPORT="x,y,z"): about 30 s in, moves the player there (a script vector is 3
 // floats 8 bytes apart).
+#endif
+// On devices too since GTA-217 (env only): the phone's streaming stress test for mesh release moves the player back and forth.
 // Test (PG_TEST_TELEPORT="x,y,z"): moves the player there about 15 s in. With
 // "x,y,z;x2,y2,z2;seconds" it then alternates between the two places, so what streams in at
 // the first place is unloaded and loaded again (the fence crash in the Vinewood Hills).
@@ -1213,6 +1277,7 @@ static void pg_test_teleport(w2c_game *instance) {
   PG_FN_SET_ENTITY_COORDS_NO_OFFSET(instance, PG_FN_PLAYER_PED_ID(instance), vector, 0, 0, 0);
   char line[96]; snprintf(line, sizeof line, "TEST: player moved to %.1f, %.1f, %.1f (jump %d).", t[0], t[1], t[2], jumps); pg_log(line);
 }
+#if TARGET_OS_SIMULATOR
 void w2c_game_f3111(w2c_game*, u64); // rage::sysDependencyScheduler::InsertInternal(rage::sysDependency*)
 // Test (PG_TEST_STALE_JOB=1): about 20 s after there's a player, queues one dependency job that looks like a freed one
 // (job function and scratch size filled with 0xDD, as RAGE fills freed memory), as players' logs show for GTA-144.
@@ -2727,6 +2792,160 @@ static void pg_trackify_tick(w2c_game *instance) {
   }
   pg_asi_leave_script(instance, previous);
 }
+// Test (PG_TEST_SHOTS=1, every platform, GTA-77): pictures of the ground at Sandy Shores, Grapeseed and the Alamo Sea,
+// each view once per renderer setting, saved by the renderer as Documents/NativeFrames/<dir>/<prefix>-<spot>-<view>-<setting>.png
+// (the game's own frame at its render size; PG_TEST_SHOTS_DIR, default "shots"). The player is held hidden 25 m above each spot while it streams in; 13:00,
+// clear weather, no wind, no traffic or people, no HUD; a script camera per view. Settings (PG_TEST_SHOTS_STATES, default
+// "on,strips,nan,old,all"): on = both GTA-77 fixes, strips = strips drawn as strips, nan = no NaN clamp, old = neither
+// fix, all = NaN clamp on every float target, launch = what the environment chose. PG_TEST_SHOTS_PREFIX (default
+// "shot"), PG_TEST_SHOTS_WAIT (seconds from the player's arrival, default 20), PG_TEST_SHOTS_STREAM (seconds per spot,
+// default 15), PG_TEST_SHOTS_ROUNDS (default 1), PG_TEST_SHOTS_HOLD (seconds to stay at each view after its pictures,
+// with the launch's settings: FPS and CPU there). While a view's pictures are taken, game time stands still
+// (SET_TIME_SCALE 0: water, clouds, leaves and cables stop), so the settings are compared on the same scene;
+// PG_TEST_SHOTS_FREEZE=0 keeps it running. PG_TEST_SHOTS_SPOTS (e.g. "trailers") limits the spots. Next to each
+// picture the renderer writes what that frame drew (<name>.txt). Ends with "TEST: shots done". Test only.
+void PGQueueTestShot(const char *name, int stripLists, int nanClamp);
+int PGTestShotsPending(void);
+void PGRenderFixes(int *stripLists, int *nanClamp);
+typedef struct { const char *name; float angle, dist, height, fov, lookFar, settle; } pg_shot_view;
+typedef struct { const char *name; float x, y, ground; pg_shot_view views[3]; } pg_shot_spot;
+static const pg_shot_spot pg_shot_spots[] = {
+  // Liquor Ace lot, Sandy Shores (the grey gravel patches of the first GTA-77 sweep): from above, low, and eye height
+  {"ace", 1389.8f, 3603.9f, 44.4f, {{"high", 240, 45, 40, 60, 0, 3}, {"low", 225, 18, 6, 60, 0, 3}, {"eye", 300, 6, 1.7f, 60, 120, 3}}},
+  // the trailers by the Alamo Sea: the shallow water from far up (striping in the simulator) and the dirt road at eye height
+  {"trailers", 1536.1f, 3770.8f, 33.3f, {{"far", 240, 220, 110, 50, 0, 5}, {"eye", 120, 6, 1.7f, 60, 120, 3}}},
+  // Grapeseed airstrip roads and fields (GTA-208: ground in the upper half of the map)
+  {"grapeseed", 2147.5f, 4782.3f, 45.5f, {{"high", 240, 45, 40, 60, 0, 3}, {"low", 225, 18, 6, 60, 0, 3}}},
+};
+static void pg_test_shots_step(w2c_game *instance) {
+  static int phase = -1, spot, view, round, rounds, shots, states[8][2], stateCount; static char stateNames[8][16];
+  static double since, startedAt; static uint32_t cam, ped; static uint64_t camName, weather;
+  static float waitS, streamS, holdS; static const char *prefix, *dir; static int freeze; static unsigned spotMask = ~0u;
+  const int spotCount = (int)(sizeof pg_shot_spots / sizeof *pg_shot_spots);
+  if (phase == -1) {
+    const char *on = getenv("PG_TEST_SHOTS");
+    if (!on || !*on || !strcmp(on, "0")) { phase = 99; return; }
+    prefix = getenv("PG_TEST_SHOTS_PREFIX"); if (!prefix || !*prefix) prefix = "shot";
+    dir = getenv("PG_TEST_SHOTS_DIR"); if (!dir || !*dir || strchr(dir, '/')) dir = "shots";
+    waitS = getenv("PG_TEST_SHOTS_WAIT") ? (float)atof(getenv("PG_TEST_SHOTS_WAIT")) : 20;
+    streamS = getenv("PG_TEST_SHOTS_STREAM") ? (float)atof(getenv("PG_TEST_SHOTS_STREAM")) : 15;
+    holdS = getenv("PG_TEST_SHOTS_HOLD") ? (float)atof(getenv("PG_TEST_SHOTS_HOLD")) : 0;
+    freeze = !(getenv("PG_TEST_SHOTS_FREEZE") && !strcmp(getenv("PG_TEST_SHOTS_FREEZE"), "0"));
+    const char *only = getenv("PG_TEST_SHOTS_SPOTS");   // e.g. "trailers": only these spots
+    if (only && *only) { spotMask = 0; for (int k = 0; k < spotCount; k++) if (strstr(only, pg_shot_spots[k].name)) spotMask |= 1u << k; }
+    rounds = getenv("PG_TEST_SHOTS_ROUNDS") ? atoi(getenv("PG_TEST_SHOTS_ROUNDS")) : 1; if (rounds < 1) rounds = 1;
+    int launchStrips = 1, launchNan = 1; PGRenderFixes(&launchStrips, &launchNan);
+    char list[256]; snprintf(list, sizeof list, "%s", getenv("PG_TEST_SHOTS_STATES") && *getenv("PG_TEST_SHOTS_STATES") ? getenv("PG_TEST_SHOTS_STATES") : "on,strips,nan,old,all");
+    char *save = NULL;
+    for (char *s = strtok_r(list, ",", &save); s && stateCount < 8; s = strtok_r(NULL, ",", &save)) {
+      int strips, nan;
+      char base[16]; snprintf(base, sizeof base, "%s", s);   // "on2": the same setting again (the frame-to-frame noise)
+      for (size_t n = strlen(base); n > 1 && base[n - 1] >= '0' && base[n - 1] <= '9'; n--) base[n - 1] = 0;
+      if (!strcmp(base, "on")) { strips = 1; nan = 1; } else if (!strcmp(base, "strips")) { strips = 0; nan = 1; } else if (!strcmp(base, "nan")) { strips = 1; nan = 0; }
+      else if (!strcmp(base, "old")) { strips = 0; nan = 0; } else if (!strcmp(base, "all")) { strips = 1; nan = 2; } else if (!strcmp(base, "sim")) { strips = 1; nan = 3; } else if (!strcmp(base, "launch")) { strips = launchStrips; nan = launchNan; }
+      else continue;
+      states[stateCount][0] = strips; states[stateCount][1] = nan; snprintf(stateNames[stateCount], 16, "%s", s); stateCount++;
+    }
+    char line[200]; snprintf(line, sizeof line, "TEST: shots armed (GTA-77): %d settings per view, launch settings strips as lists %d, NaN clamp %d.", stateCount, launchStrips, launchNan); pg_log(line);
+    phase = 0;
+  }
+  if (phase >= 98 || !stateCount) return;
+  const double now = timeMS(CLOCK_MONOTONIC) / 1000.0;
+  if (phase == 0) {   // the player exists: wait for the world around them
+    if (PGGameStatus() & 16) { since = 0; return; }
+    if (!since) since = now;
+    if (now - since < waitS) return;
+    ped = (uint32_t)pg_test_call(instance, 0xd80958fc74e988a6ull, 0, NULL);   // PLAYER_PED_ID
+    pg_test_call(instance, 0x4055e40bd2dbec1dull, 1, (uint64_t[]){1});   // PAUSE_CLOCK
+    pg_test_call(instance, 0x47c3b5848c3e45d8ull, 3, (uint64_t[]){13, 0, 0});   // SET_CLOCK_TIME
+    pg_test_call(instance, 0xed712ca327900c8aull, 1, (uint64_t[]){pg_wasm_text(&weather, "EXTRASUNNY")});   // SET_WEATHER_TYPE_NOW_PERSIST
+    pg_test_call(instance, 0xee09ecedbabe47fcull, 1, (uint64_t[]){pg_f32_arg(0)});   // SET_WIND_SPEED
+    pg_test_call(instance, 0x3882114bde571ad4ull, 2, (uint64_t[]){ped, 1});   // SET_ENTITY_INVINCIBLE
+    pg_test_call(instance, 0x428ca6dbd1094446ull, 2, (uint64_t[]){ped, 1});   // FREEZE_ENTITY_POSITION
+    pg_test_call(instance, 0xea1c610a04db6bbbull, 3, (uint64_t[]){ped, 0, 0});   // SET_ENTITY_VISIBLE
+    startedAt = now; spot = 0; round = 0; phase = 2;
+    while (spot < spotCount && !(spotMask >> spot & 1)) spot++;
+    if (spot >= spotCount) { pg_log("TEST: shots: no spot matches PG_TEST_SHOTS_SPOTS."); phase = 98; return; }
+    pg_log("TEST: shots start (13:00, clear, no wind, no traffic).");
+  }
+  // every frame while the test runs: no HUD, people or traffic
+  pg_test_call(instance, 0x719ff505f097fd20ull, 0, NULL);   // HIDE_HUD_AND_RADAR_THIS_FRAME
+  pg_test_call(instance, 0x95e3d6257b166cf2ull, 1, (uint64_t[]){pg_f32_arg(0)});   // SET_PED_DENSITY_MULTIPLIER_THIS_FRAME
+  pg_test_call(instance, 0x7a556143a1c03898ull, 2, (uint64_t[]){pg_f32_arg(0), pg_f32_arg(0)});   // SET_SCENARIO_PED_DENSITY_MULTIPLIER_THIS_FRAME
+  pg_test_call(instance, 0x245a6883d966d537ull, 1, (uint64_t[]){pg_f32_arg(0)});   // SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME
+  pg_test_call(instance, 0xb3b3359379fe77d3ull, 1, (uint64_t[]){pg_f32_arg(0)});   // SET_RANDOM_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME
+  const pg_shot_spot *s = &pg_shot_spots[spot];
+  if (phase == 2) {   // the next spot: the player 25 m up, the world streams in around them
+    pg_test_call(instance, 0x06843da7060a026bull, 8, (uint64_t[]){ped, pg_f32_arg(s->x), pg_f32_arg(s->y), pg_f32_arg(s->ground + 25), 0, 0, 0, 1});   // SET_ENTITY_COORDS
+    since = now; view = 0; phase = 3;
+    char line[120]; snprintf(line, sizeof line, "TEST: shots at %s (%.1f, %.1f), round %d.", s->name, s->x, s->y, round + 1); pg_log(line);
+    return;
+  }
+  if (phase == 3) { if (now - since >= streamS) phase = 4; return; }
+  const pg_shot_view *v = &s->views[view];
+  if (phase == 4) {   // the view's camera
+    const float r = v->angle * (float)M_PI / 180.0f;
+    const float cx = s->x + v->dist * sinf(r), cy = s->y - v->dist * cosf(r), cz = s->ground + v->height;
+    const float tx = v->lookFar > 0 ? s->x - v->lookFar * sinf(r) : s->x, ty = v->lookFar > 0 ? s->y + v->lookFar * cosf(r) : s->y, tz = s->ground;
+    if (!cam) {
+      cam = (uint32_t)pg_test_call(instance, 0xb51194800b257161ull, 10, (uint64_t[]){pg_wasm_text(&camName, "DEFAULT_SCRIPTED_CAMERA"), pg_f32_arg(cx), pg_f32_arg(cy), pg_f32_arg(cz),
+                                                                                      pg_f32_arg(0), pg_f32_arg(0), pg_f32_arg(0), pg_f32_arg(v->fov), 1, 2});   // CREATE_CAM_WITH_PARAMS
+    }
+    pg_test_call(instance, 0x4d41783fb745e42eull, 4, (uint64_t[]){cam, pg_f32_arg(cx), pg_f32_arg(cy), pg_f32_arg(cz)});   // SET_CAM_COORD
+    pg_test_call(instance, 0xb13c14f66a00d047ull, 2, (uint64_t[]){cam, pg_f32_arg(v->fov)});   // SET_CAM_FOV
+    pg_test_call(instance, 0xf75497bb865f0803ull, 4, (uint64_t[]){cam, pg_f32_arg(tx), pg_f32_arg(ty), pg_f32_arg(tz)});   // POINT_CAM_AT_COORD
+    pg_test_call(instance, 0x026fb97d0a425f84ull, 2, (uint64_t[]){cam, 1});   // SET_CAM_ACTIVE
+    pg_test_call(instance, 0x07e5b515db0636fcull, 5, (uint64_t[]){1, 0, 0, 1, 0});   // RENDER_SCRIPT_CAMS
+    since = now; phase = 5;
+    return;
+  }
+  if (phase == 5) {   // settled: game time stops (PG_TEST_SHOTS_FREEZE=0 keeps it running), so every setting sees the same scene
+    if (now - since < v->settle) return;
+    if (freeze) pg_test_call(instance, 0x1d408577d440e81eull, 1, (uint64_t[]){pg_f32_arg(0)});   // SET_TIME_SCALE 0
+    since = now; phase = 51;
+    return;
+  }
+  if (phase == 51) {   // one picture per setting
+    if (freeze && now - since < 0.7) return;
+    for (int k = 0; k < stateCount; k++) {
+      char name[160];
+      char r[8] = ""; if (rounds > 1) snprintf(r, sizeof r, "-r%d", round + 1);
+      snprintf(name, sizeof name, "%s/%s%s-%s-%s-%s", dir, prefix, r, s->name, v->name, stateNames[k]);
+      PGQueueTestShot(name, states[k][0], states[k][1]);
+      shots++;
+    }
+    since = now; phase = 6;
+    return;
+  }
+  if (phase == 6) {   // the renderer took them (and the view was held PG_TEST_SHOTS_HOLD s): the next view, spot or round
+    if (PGTestShotsPending() && now - since < 30) return;
+    if (freeze) pg_test_call(instance, 0x1d408577d440e81eull, 1, (uint64_t[]){pg_f32_arg(1)});   // SET_TIME_SCALE 1
+    if (holdS > 0) { since = now; phase = 7; char line[120]; snprintf(line, sizeof line, "TEST: holding %s-%s for %.0f s.", s->name, v->name, holdS); pg_log(line); return; }
+  }
+  if (phase == 7) { if (now - since < holdS) return; phase = 8; }
+  if (phase == 6 || phase == 8) {
+    if (++view < 3 && s->views[view].name) { phase = 4; return; }
+    while (++spot < spotCount && !(spotMask >> spot & 1)) {}
+    if (spot < spotCount) { phase = 2; return; }
+    if (++round < rounds) { spot = 0; while (!(spotMask >> spot & 1)) spot++; phase = 2; return; }
+    pg_test_call(instance, 0x07e5b515db0636fcull, 5, (uint64_t[]){0, 0, 0, 1, 0});   // RENDER_SCRIPT_CAMS off
+    pg_test_call(instance, 0x026fb97d0a425f84ull, 2, (uint64_t[]){cam, 0});   // SET_CAM_ACTIVE
+    pg_test_call(instance, 0x865908c81a2c22e9ull, 2, (uint64_t[]){cam, 0});   // DESTROY_CAM
+    pg_test_call(instance, 0x428ca6dbd1094446ull, 2, (uint64_t[]){ped, 0});   // FREEZE_ENTITY_POSITION
+    pg_test_call(instance, 0xea1c610a04db6bbbull, 3, (uint64_t[]){ped, 1, 0});   // SET_ENTITY_VISIBLE
+    char line[120]; snprintf(line, sizeof line, "TEST: shots done (GTA-77): %d pictures in %.0f s.", shots, now - startedAt); pg_log(line);
+    phase = 98;
+  }
+}
+// The game commands run inside the "main" script (pg_asi_script_tick runs before it): a camera needs a script to own it.
+static void pg_test_shots(w2c_game *instance) {
+  static int on = -1;
+  if (on < 0) { const char *v = getenv("PG_TEST_SHOTS"); on = v && *v && strcmp(v, "0") != 0; }
+  if (!on) return;
+  const uint64_t previous = pg_asi_enter_script(instance);
+  pg_test_shots_step(instance);
+  pg_asi_leave_script(instance, previous);
+}
 #if TARGET_OS_SIMULATOR || TARGET_OS_MACCATALYST
 // Harness: the debug channel's "audiodump <path> <seconds>" saves the next seconds of the game's sound (48 kHz,
 // stereo float32, interleaved), so a test can check what played (Self Radio, GTA-5).
@@ -2744,6 +2963,7 @@ void pg_asi_script_tick(w2c_game *instance, u64 thread) {
   pg_submarine_depth_tick(instance);
   pg_cheats_menu_tick(instance);
   pg_trackify_tick(instance);
+  pg_test_shots(instance);
 #if TARGET_OS_SIMULATOR || TARGET_OS_MACCATALYST
   pg_debug_tick(instance, true);
 #endif
@@ -2771,7 +2991,9 @@ void pg_virtual_pad_apply(w2c_game *instance, uint64_t pad) {
   if (pad == 12840656) pg_keep_on_test_map(instance);
   if (pad == 12840656) pg_keep_weapon_loaded(instance);
   if (pad == 12840656) pg_trace_stream_loads(instance);
-#if TARGET_OS_SIMULATOR
+#if !TARGET_OS_SIMULATOR
+  if (pad == 12840656) pg_test_teleport(instance);
+#else
   if (pad == 12840656) { pg_test_teleport(instance); pg_test_stale_job(instance); pg_test_speed(instance); pg_test_weapon(instance); pg_test_outfit(instance); pg_test_prompts(instance); pg_test_cash(instance); pg_test_tv(instance); pg_test_tv_flood(instance); pg_test_gfx_dirty(instance); pg_test_position(); pg_test_video(instance); pg_test_lester1_tv(instance); pg_test_photo(instance); pg_test_car(instance); pg_test_trailer_monitor(instance); pg_test_request_models(instance); pg_test_loadscene(instance); pg_test_loadscene_monitor(instance); }
 #endif
   if (pad != 12840656 || !atomic_load(&virtualPadActive)) return;
@@ -3207,6 +3429,7 @@ void PGSetBackBufferSize(int width,int height){
 }
 static void *boot(void *ignored) {
   pthread_setname_np("gta.engine.main");	// for the Threads line (NativeThreadCPU.c)
+  {extern void pg_engine_thread_qos(const char *name);pg_engine_thread_qos("gta.engine.main");}	// NativeThreads.c (GTA-216)
   // Real iOS must budget against its Jetsam allowance. Simulator runs opt in
   // with an explicit modeled ceiling so ordinary performance baselines match.
   const char *guard=getenv("PG_MEMORY_GUARD");nativeMemoryGuard=guard?atoi(guard)==1:!TARGET_OS_SIMULATOR;
@@ -3214,7 +3437,7 @@ static void *boot(void *ignored) {
   const char *limit=getenv("PG_STREAM_MEMORY_LIMIT_MB");
   if(limit){char *end;unsigned long mb=strtoul(limit,&end,10);if(end!=limit&&!*end&&mb>=2048&&mb<=8192)simulatedProcessLimit=(uint64_t)mb*1048576;}
 #endif
-  if(nativeMemoryGuard)pg_log("Native streaming memory guard enabled with 384 MB of reserve.");
+  if(nativeMemoryGuard){char line[96];snprintf(line,sizeof line,"Native streaming memory guard enabled with %llu MB of reserve.",(unsigned long long)(guardReserve()>>20));pg_log(line);}
   // Device A/B switches (GTA-117, GTA-128), named in the log so each run says which side it was.
   if(nativeMemoryGuard&&getenv("PG_GUARD_SPARE_MB"))pg_log("Memory guard A/B: fast nudges only with PG_GUARD_SPARE_MB to spare.");
   if(nativeMemoryGuard&&getenv("PG_GUARD_POOL_ROOM")&&atoi(getenv("PG_GUARD_POOL_ROOM"))==0)pg_log("Memory guard: the resource pool's free space doesn't count as room (PG_GUARD_POOL_ROOM=0).");

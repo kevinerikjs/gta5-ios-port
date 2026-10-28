@@ -40,9 +40,11 @@ fi
 
 # Optional profile-guided optimization (GTA-172): PG_PGO_PROFILE is an .profdata from Scripts/pgo.sh, PG_ORDER_FILE a
 # list of hot functions the linker places together. Without them the build is as before.
+# The compiler's "profile data may be out of date" warnings stay on: Scripts/pgo_check.py counts them afterwards and
+# stops the build when the profile no longer matches the code (GTA-216; refresh it with Scripts/pgo.sh).
 PGO_CFLAGS=""; PGO_LDFLAGS=""
 if [ -n "${PG_PGO_PROFILE:-}" ]; then
-  PGO_CFLAGS="-fprofile-instr-use=$PG_PGO_PROFILE -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-profile-instr-mismatch"
+  PGO_CFLAGS="-fprofile-instr-use=$PG_PGO_PROFILE -Wno-profile-instr-unprofiled"
   echo "Profile-guided optimization with $PG_PGO_PROFILE"
 fi
 [ -n "${PG_ORDER_FILE:-}" ] && PGO_LDFLAGS="-Wl,-order_file,$PG_ORDER_FILE"
@@ -55,6 +57,7 @@ xcodebuild -project PlayGTA5Native.xcodeproj -scheme PlayGTA5Native \
   grep -E 'error:' Build/xcodebuild.log | head -20
   echo "Build failed; the full log is app/Build/xcodebuild.log"; exit 1; }
 grep -E 'BUILD SUCCEEDED' Build/xcodebuild.log
+if [ -n "${PG_PGO_PROFILE:-}" ]; then "$PY" Scripts/pgo_check.py Build/xcodebuild.log || exit 1; fi
 
 APP=Build/Release/Build/Products/Release-iphoneos/PlayGTA5Native.app
 # AltStore/SideStore re-sign the app; an ad-hoc signature with the chosen

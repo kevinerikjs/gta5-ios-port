@@ -174,7 +174,9 @@ enum GameFiles {
         return isData(folder) ? folder : nil
     }
 
-    private static let skippedFolders: Set<String> = ["x64", "common", "b", "EngineFiles", "__MACOSX", "Library", "tmp", ".Trash"]
+    /// Never searched. Mods (the app's Mods folder, and a PC game's OpenIV mods folder): a mod with its own x64 and
+    /// common folders looked like a game folder with 5,500 missing files (GTA-248, Kevin's phone 2026-10-28).
+    private static let skippedFolders: Set<String> = ["x64", "common", "b", "EngineFiles", "__MACOSX", "Library", "tmp", ".Trash", "Mods", "mods"]
 
     private static func isData(_ url: URL) -> Bool {
         isDirectory(url.appendingPathComponent("x64")) && isDirectory(url.appendingPathComponent("common"))

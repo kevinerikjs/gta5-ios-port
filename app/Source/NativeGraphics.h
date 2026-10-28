@@ -4,6 +4,11 @@
 extern "C" {
 #endif
 void PGCaptureNativeFrame(const char *name);
+// GTA-77 tests (PG_TEST_SHOTS): a picture drawn with these renderer settings (strips as lists 0/1, NaN clamp 0/1/2),
+// how many are still waiting, and the launch's settings.
+void PGQueueTestShot(const char *name, int stripLists, int nanClamp);
+int PGTestShotsPending(void);
+void PGRenderFixes(int *stripLists, int *nanClamp);
 double PGRenderedFramesPerSecond(void);
 void PGAttachMetalLayer(void *layer);
 void PGStartGraphics(void *memory,uint64_t memorySize,uint64_t ring,uint64_t ringSize,uint64_t debug);

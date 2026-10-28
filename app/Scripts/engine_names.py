@@ -58,6 +58,9 @@ HOST_FUNCTIONS = {
     'PG_FN_LOAD_SCENE_IS_LOADED': 'CLoadScene::IsLoaded()',
     'PG_FN_REQUEST_SCALEFORM_MOVIE': 'graphics_commands::CommandRequestScaleformMovieCommon(char const*, bool, bool)',
     'PG_FN_OPUS_DECODE_FRAME': 'opus_decode_frame',
+    # Native zstd and zlib in the streamer (Source/NativeDecompress.c, GTA-216): the verify mode's wasm calls.
+    'PG_FN_ZSTD_DECOMPRESS_STREAM': 'ZSTD_decompressStream',
+    'PG_FN_INFLATE': 'inflate',
     'PG_FN_LOAD_SCENE_START': 'CLoadScene::StartFromScript(rage::Vec3V const&, rage::Vec3V const&, float, rage::scrThreadId, bool, int)',
     'PG_FN_OPERATOR_NEW': 'operator new(unsigned long)',
     'PG_FN_UI_SETTINGS': 'CSettingsManager::GetUISettings()',

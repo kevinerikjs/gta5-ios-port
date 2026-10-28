@@ -163,10 +163,16 @@ final class GameSettings {
     }
 
     // Graphics. The default comes from the measured device tier.
-    lazy var tier = DeviceTier.probe()
+    lazy var tier = DeviceTier.probe(capMB: memoryCapMB)
     var graphicsPreset: GraphicsPreset {
         // integer(forKey:) also reads "-graphicsPreset 4" given as a launch argument (a string).
         get {
+            // GTA-241 (v1.5.2): 4 GB iPhones that saved a preset above Ultra Performance start from Ultra Performance
+            // again, once. Not where only a memory cap makes the limit small (a test phone keeps its own choice).
+            if memoryCapMB == 0, tier.lowMemory, !defaults.bool(forKey: "lowMemoryLiteReset") {
+                defaults.set(true, forKey: "lowMemoryLiteReset")
+                if let saved = defaults.object(forKey: "graphicsPreset") as? Int, saved > GraphicsPreset.lite.rawValue { defaults.removeObject(forKey: "graphicsPreset") }
+            }
             guard defaults.object(forKey: "graphicsPreset") != nil, let preset = GraphicsPreset(rawValue: defaults.integer(forKey: "graphicsPreset")) else {
                 #if targetEnvironment(macCatalyst)
                 // Mac: Quality at most by default (about 80 FPS on an M4 with the frame rate unlocked); Ultra and Max stay a choice.
@@ -253,7 +259,16 @@ final class GameSettings {
         set { defaults.set(newValue, forKey: "expSteadyCityLowMemory") }
     }
     var meshMemoryRelease: Bool {       // GTA-152: the engine's copy of each mesh handed back once the GPU has it; on by default below a 2,600 MB app limit (Kevin, 2026-10-21)
-        get { defaults.object(forKey: "expMeshMemoryRelease") as? Bool ?? (tier.memoryLimitMB < 2600) }
+        // GTA-217: on every iPhone and iPad, with pages shared by several meshes too (mode 3: about 480 MB in a 6 GB city drive).
+        // GTA-208/GTA-231: on Macs whose app limit is under 6 GB (60% of an 8 GB Mac: 4,915 MB). Lab Mac A/B 2026-10-26 at
+        // that limit, teleport stress: 0 stops in 3 runs against 3, the same rural ground, engine memory 338 MB lower.
+        get {
+            #if targetEnvironment(macCatalyst)
+            return defaults.object(forKey: "expMeshMemoryRelease") as? Bool ?? (tier.memoryLimitMB < 6144)
+            #else
+            return defaults.object(forKey: "expMeshMemoryRelease") as? Bool ?? true
+            #endif
+        }
         set { defaults.set(newValue, forKey: "expMeshMemoryRelease") }
     }
     var smallerEngineHeaps: Bool {      // GTA-124: Replay and debug heaps 16/128 MB instead of 196/220, off by default
@@ -269,11 +284,16 @@ final class GameSettings {
         if !settings.fastEngineThreads { off("PG_ENGINE_QOS", "off"); off("PG_QUERY_COMMIT_MS", "2") }
         if !settings.compressedAlphaTextures { off("PG_ASTC_BC3", "0") }
         if settings.smallerEngineHeaps { off("PG_SMALL_ENGINE_HEAPS", "1") }
-        if settings.meshMemoryRelease { off("PG_MESH_RELEASE", "2") }
+        if settings.meshMemoryRelease { off("PG_MESH_RELEASE", "3") }
     }
     var showFPS: Bool {
         get { defaults.object(forKey: "showFPS") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "showFPS") }
+    }
+    /// The FPS counter also shows CPU power, busy cores and the heat state (GTA-216): what heats the phone, while playing.
+    var showPower: Bool {
+        get { defaults.bool(forKey: "showPower") }
+        set { defaults.set(newValue, forKey: "showPower") }
     }
     /// Touch controls › Minimap (GTA-131): where the game's minimap sits. The game reads it when it starts.
     enum MinimapPlace: Int, CaseIterable {

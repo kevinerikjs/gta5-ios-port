@@ -15,6 +15,7 @@ MAC_JOBS="${JOBS:-$(sysctl -n hw.ncpu)}" Scripts/build_mac.sh > Build/xcodebuild
   grep -E 'error:' Build/xcodebuild-mac.log | head -20
   echo "Build failed; the full log is app/Build/xcodebuild-mac.log"; exit 1; }
 grep -E 'BUILD SUCCEEDED' Build/xcodebuild-mac.log
+if [ -n "${PG_PGO_PROFILE:-}" ]; then "$PY" Scripts/pgo_check.py Build/xcodebuild-mac.log || exit 1; fi
 
 # build_mac.sh signs the app ad hoc (not notarized): macOS asks once before it opens a downloaded copy
 # (System Settings › Privacy & Security › Open Anyway). docs/MAC.md explains it.

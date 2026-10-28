@@ -1,9 +1,11 @@
 import UIKit
 import UniformTypeIdentifiers
 
-/// The game files screen: where the files are and whether every one of them checks out, finding them
-/// anywhere on this iPhone, and getting them from a link (your own game server, or an archive the app
-/// downloads, unpacks and checks by itself) or from an archive already in Files.
+/// The game files screen: where the files are and whether every one of them checks out, finding them in
+/// the app's own folder (on the Mac also anywhere you pick), and getting them from a link (your own game
+/// server, or an archive the app downloads, unpacks and checks by itself). On iPhone the folder and archive
+/// pickers are gone (GTA-248): they failed on many sideloaded installs, so the game goes into the GTA V Port
+/// folder in Files, with a step-by-step guide (AddGameGuideViewController).
 final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate, UITextFieldDelegate {
     /// Called whenever the game files in use changed.
     var onChange: (() -> Void)?
@@ -67,9 +69,14 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
         wide.isActive = true
 
         stack.addArrangedSubview(statusSection())
+        #if targetEnvironment(macCatalyst)
         stack.addArrangedSubview(findSection())
         stack.addArrangedSubview(linkSection())
         stack.addArrangedSubview(archiveSection())
+        #else
+        stack.addArrangedSubview(folderSection())
+        stack.addArrangedSubview(linkSection())
+        #endif
         stack.addArrangedSubview(progressSection())
         NotificationCenter.default.addObserver(self, selector: #selector(installChanged), name: .gameInstallChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(cameBack), name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -84,6 +91,15 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
                 scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)), animated: false)
             }
         }
+        #if !targetEnvironment(macCatalyst)
+        // Automation: --add-game-guide <step> opens the guide at that step (1-5); --game-files-look taps Look for the game.
+        if let i = arguments.firstIndex(of: "--add-game-guide"), i + 1 < arguments.count, let step = Int(arguments[i + 1]) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showGuide(startAt: step - 1) }
+        }
+        if arguments.contains("--game-files-look") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.lookInAppFolder() }
+        }
+        #endif
         // Automation: --install-continue taps Continue the download after a few seconds (GTA-93 test).
         if arguments.contains("--install-continue") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
@@ -138,6 +154,7 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
         return card(nil, [row, buttons])
     }
 
+    #if targetEnvironment(macCatalyst)
     private func findSection() -> UIView {
         let find = Theme.glassButton(AppLanguage.choose("Look again"), symbol: "magnifyingglass")
         find.addAction(UIAction { [weak self] _ in self?.lookInAppFolder() }, for: .touchUpInside)
@@ -163,6 +180,54 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
             buttons
         ])
     }
+    #endif
+
+    #if !targetEnvironment(macCatalyst)
+    /// iPhone (GTA-248): the one way in that works on every install, besides a link. The game folder, or its
+    /// .zip/.rar (all parts), goes into Files › On My iPhone › GTA V Port; coming back, the app looks there by itself.
+    private func folderSection() -> UIView {
+        archivesStack.axis = .vertical
+        archivesStack.spacing = 8
+        let guide = Theme.primaryButton(AppLanguage.choose("Show me how"), symbol: "play.circle.fill")
+        guide.addAction(UIAction { [weak self] _ in self?.showGuide(startAt: 0) }, for: .touchUpInside)
+        let files = Theme.glassButton(AppLanguage.choose("Open the GTA V Port folder"), symbol: "arrow.up.forward.app")
+        files.addAction(UIAction { [weak self] _ in self?.openAppFolderInFiles() }, for: .touchUpInside)
+        let find = Theme.glassButton(AppLanguage.choose("Look for the game"), symbol: "magnifyingglass")
+        find.addAction(UIAction { [weak self] _ in self?.lookInAppFolder() }, for: .touchUpInside)
+        var views: [UIView] = [
+            note(AppLanguage.choose("Put your unpacked game folder, or the .zip or .rar it came in, into Files › On My iPhone › GTA V Port. When you come back, the app finds it by itself and unpacks an archive for you.")),
+            archivesStack, guide,   // an archive found here: Unpack is the next thing to do
+            UIStackView(arrangedSubviews: [files, UIView()]),
+            UIStackView(arrangedSubviews: [find, UIView()])
+        ]
+        if GameFolder.insideLiveContainer {
+            views.insert(note(AppLanguage.choose("In LiveContainer this app's folder is inside LiveContainer's own folder in Files, not directly in On My iPhone: Open the GTA V Port folder takes you there.")), at: 1)
+        }
+        return card(AppLanguage.choose("Put the game in the GTA V Port folder"), views)
+    }
+
+    private func showGuide(startAt step: Int) {
+        guard presentedViewController == nil else { return }
+        let guide = AddGameGuideViewController(startAt: step)
+        guide.onOpenFolder = { [weak self] in self?.openAppFolderInFiles() }
+        let navigation = UINavigationController(rootViewController: guide)
+        Theme.styleNavigation(navigation)
+        navigation.modalPresentationStyle = .fullScreen
+        present(navigation, animated: true)
+    }
+
+    /// The guide opens by itself the first time this screen has nothing at all to show (no game, archive or server).
+    private func showGuideOnce() {
+        let key = "addGameGuideShown"
+        guard !UserDefaults.standard.bool(forKey: key), !ProcessInfo.processInfo.arguments.contains("--no-add-game-guide") else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, self.view.window != nil, self.presentedViewController == nil, !self.install.isRunning else { return }
+            UserDefaults.standard.set(true, forKey: key)
+            GameFolder.log("Game files: no game yet, showing the add-the-game guide")
+            self.showGuide(startAt: 0)
+        }
+    }
+    #endif
 
     private func linkSection() -> UIView {
         linkField.placeholder = "https://…"
@@ -191,6 +256,7 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
         ])
     }
 
+    #if targetEnvironment(macCatalyst)
     private func archiveSection() -> UIView {
         archivesStack.axis = .vertical
         archivesStack.spacing = 8
@@ -204,6 +270,7 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
             archivesStack, buttons
         ])
     }
+    #endif
 
     private func progressSection() -> UIView {
         progressTitle.font = Theme.body(16, .semibold)
@@ -237,6 +304,9 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
 
     private func show(report: GameFiles.Report?, found: Bool) {
         lastReport = report ?? GameFolder.appFolderReport
+        #if !targetEnvironment(macCatalyst)
+        var nothingYet = false   // nothing at all to show: the guide opens by itself the first time
+        #endif
         let server = GameSettings.shared.assetServer
         if let report, found {
             if report.isComplete {
@@ -258,13 +328,23 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
                       detail: server + " · " + serverProblem + "\n\n" + AppLanguage.choose("Without it there are no game files to play. Check the address, or use one of the ways below to put the files on this iPhone."))
         } else if !server.isEmpty {
             setStatus(true, title: AppLanguage.choose("Streaming from your server"), detail: server)
+        } else if let archive = GameFolder.archivesFound.first, !install.isRunning {
+            // A .zip/.rar moved into the app's folder (GTA-248): say so, the Unpack button is in the folder card.
+            setStatus(nil, title: AppLanguage.choose("Found a game archive"), detail: AppLanguage.interpolate(AppLanguage.choose("{arg0} isn't unpacked yet. Tap Unpack below and the app does it for you."), [archive.lastPathComponent]))
         } else if lookedAgain {
+            #if targetEnvironment(macCatalyst)
             setStatus(false, title: AppLanguage.choose("Nothing in this app's folder"), detail: AppLanguage.choose("The app looked through every folder in On My iPhone › GTA V Port and found no game. If your game is somewhere else (another folder, or another app's folder), tap Choose a folder… below and pick it, or pick On My iPhone itself to search everything. iOS only lets an app into other folders once you pick them."))
+            #else
+            setStatus(false, title: AppLanguage.choose("Nothing in this app's folder"), detail: AppLanguage.choose("The app looked through every folder in On My iPhone › GTA V Port and found no game. Put your unpacked game folder, or its .zip or .rar, in there (Show me how explains each step), then come back."))
+            #endif
         } else {
+            #if !targetEnvironment(macCatalyst)
+            nothingYet = true
+            #endif
             // A player who updated with another sideloader or Apple ID gets a second, empty app (GTA-153).
             var detail = AppLanguage.choose("Use one of the ways below. Whichever you choose, the app checks every file before you play.")
             #if !targetEnvironment(macCatalyst)
-            detail += "\n\n" + AppLanguage.choose("Updated the app and your files are gone? Installing with another sideloader or Apple ID makes a separate copy of the app with an empty folder. Install over the old app the same way, or choose your game folder again.")
+            detail += "\n\n" + AppLanguage.choose("Updated the app and your files are gone? Installing with another sideloader or Apple ID makes a separate copy of the app with an empty folder. Install over the old app the same way, or put your game in this app's folder again.")
             #endif
             setStatus(nil, title: AppLanguage.choose("No game files yet"), detail: detail)
         }
@@ -274,11 +354,17 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
         continueButton.isHidden = resumable == nil
         if let resumable {
             let percent = String(Int((resumable.fraction * 100).rounded(.down)))
+            #if targetEnvironment(macCatalyst)
+            let fromArchive = AppLanguage.choose("Tap Continue the download and pick the same archive: files already unpacked aren't unpacked again.")
+            #else
+            let fromArchive = AppLanguage.choose("Tap Continue the download. If the archive is gone from the GTA V Port folder, put the same one back there first: files already unpacked aren't unpacked again.")
+            #endif
             setStatus(false, title: AppLanguage.interpolate(AppLanguage.choose("The download stopped at {arg0}%"), [percent]),
-                      detail: resumable.urls.isEmpty
-                        ? AppLanguage.choose("Tap Continue the download and pick the same archive: files already unpacked aren't unpacked again.")
-                        : AppLanguage.choose("Tap Continue the download: it picks up where it stopped instead of starting again."))
+                      detail: resumable.urls.isEmpty ? fromArchive : AppLanguage.choose("Tap Continue the download: it picks up where it stopped instead of starting again."))
         }
+        #if !targetEnvironment(macCatalyst)
+        if nothingYet && resumable == nil { showGuideOnce() }
+        #endif
         detailsButton.isHidden = lastReport?.isComplete ?? true
         anywayButton.isHidden = found || !(lastReport.map(GameFolder.playAnywayAllowed) ?? false)
         showArchives()
@@ -318,7 +404,11 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
         } else if let name = resumable.fileNames.first, let archive = GameFolder.archivesFound.first(where: { $0.lastPathComponent == name }) {
             startInstall(.file(archive, ownedByApp: true), confirmed: true)
         } else {
+            #if targetEnvironment(macCatalyst)
             pickArchive()
+            #else
+            setStatus(false, title: AppLanguage.choose("The archive isn't in the GTA V Port folder"), detail: AppLanguage.choose("Tap Continue the download. If the archive is gone from the GTA V Port folder, put the same one back there first: files already unpacked aren't unpacked again."))
+            #endif
         }
     }
 
@@ -392,7 +482,12 @@ final class GameFilesViewController: UIViewController, UIDocumentPickerDelegate,
     }
 
     @objc private func cameBack() {
+        // On iPhone, coming back without a game in use always looks again: the game may have been moved in by hand.
+        #if targetEnvironment(macCatalyst)
         guard lookWhenBack, !install.isRunning else { return }
+        #else
+        guard lookWhenBack || !GameFolder.isChosen, !install.isRunning, presentedViewController == nil else { return }
+        #endif
         lookWhenBack = false
         // A complete game folder picked elsewhere stays in use; only without one does the app's folder take over.
         if GameFolder.isChosen, !GameFolder.inAppFolder, lastReport?.isComplete == true { refresh(recheck: false); return }

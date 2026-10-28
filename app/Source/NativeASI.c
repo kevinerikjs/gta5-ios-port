@@ -730,7 +730,19 @@ static bool onSyscall(struct Machine *m) {
 // a mod's code runs, that fault stops only its script; any other fault goes to whoever handled
 // it before (the engine uses these signals itself for its memory guards).
 static struct sigaction previousSegv, previousBus;
+// Mesh release (GTA-152/GTA-217) keeps the pages it has handed back protected and puts one back when anything touches
+// it, through its own fault handler, installed before this one. A fault on such a page while a script runs (the mod
+// reading game memory, or game code a native runs) is the engine's, not the mod's: it goes to that handler, and the
+// access runs again. Before (GTA-244), this handler took it, stopped the script and jumped out of whatever was running,
+// game code included, leaving its locks and stack behind; with mode 3 on every iPhone (it also hands back pages that
+// hold up to 1 KB of other game data) Menyoo stopped the app within minutes.
+int PGMeshReleaseOn(void);
 static void onFault(int sig, siginfo_t *info, void *context) {
+  uintptr_t at = (uintptr_t)info->si_addr, low = (uintptr_t)H.memory;
+  if (PGMeshReleaseOn() && at >= low && at - low < H.size) {
+    struct sigaction *old = sig == SIGBUS ? &previousBus : &previousSegv;
+    if (old->sa_flags & SA_SIGINFO) { old->sa_sigaction(sig, info, context); return; }
+  }
   if (running && pthread_equal(pthread_self(), runner) && cur && cur->m->canhalt) {
     cur->m->faultaddr = (i64)((uintptr_t)info->si_addr - (uintptr_t)H.memory);
     siglongjmp(cur->m->onhalt, kMachineSegmentationFault);

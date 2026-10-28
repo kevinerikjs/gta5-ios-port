@@ -12,8 +12,10 @@
 #include "MRFrameReports.h"
 #include "BCTextureDecoder.h"
 #include "BC1ToASTC.h"
+#include "BCToETC.h"
 #include "NativeGraphics.h"
 #include "NativeFrameRate.h"
+#include "NativeMemoryBreakdown.h"
 #import <UIKit/UIKit.h>
 #if __has_include(<MetalFX/MetalFX.h>) && !TARGET_OS_SIMULATOR		// iPhone SDK only
 #import <MetalFX/MetalFX.h>
@@ -44,6 +46,8 @@ static struct TextureStats {
 	std::atomic<int64_t> quarterSize{0};		// of those, without their two largest (PG_LITE_BIG_MIP_SKIP)
 	std::atomic<uint64_t> missingLevel{0};	// Lite: copies or readbacks that needed a dropped level
 	std::atomic<uint64_t> convertMicros{0}, converts{0};	// BC to ASTC or pixels on the CPU (GTA-162: what converting ahead would save)
+	std::atomic<uint64_t> etcMicros{0}, etcToASTC{0}, etcAlphaLost{0}, etcMismatch{0};	// BC as ETC2/EAC (GTA-217)
+	std::atomic<int64_t> etcPendingBytes{0};		// BC1 levels waiting for the GPU's first use (malloc)
 } gTextureStats;
 // What the textures hold on the GPU (an estimate in the simulator). On an iPhone that memory counts
 // against the app's limit; the simulator's GPU is the Mac's, so the simulated limit adds it (EngineHost.c).
@@ -55,7 +59,13 @@ extern "C" double PGGPUFrameMilliseconds(void) {
 	return frames ? micros / 1000.0 / frames : 0;
 }
 // GPU buffers, for the report: how many, what they hold, and what iOS charges (whole 16 KB pages each).
-static struct BufferStats { std::atomic<int64_t> count{0}, bytes{0}, pages{0}, meshCount{0}, meshBytes{0}, cbCount{0}, cbBytes{0}, cbWritten{0}; } gBufferStats;
+static struct BufferStats { std::atomic<int64_t> count{0}, bytes{0}, pages{0}, meshCount{0}, meshBytes{0}, cbCount{0}, cbBytes{0}, cbWritten{0}, inSlab{0}; } gBufferStats;
+// The memory breakdown (GTA-217): GPU bytes and counts by texture kind, and bytes by pixel format.
+static std::atomic<int64_t> gTexKindBytes[PGTexKinds], gTexKindCount[PGTexKinds], gFormatBytes[1024];
+static std::atomic<int64_t> gSlabTotal{0};
+static std::atomic<uint64_t> gDrawablePixels{0};
+static id<MTLDevice> gReportDevice;		// set once in setup()
+static std::atomic<uint32_t> gPipelinesMade{0};
 // For the app memory line (GTA-174): Metal buffer memory, slabs and own buffers, rounded to pages.
 extern "C" uint64_t PGGPUBufferBytes(void) { int64_t v = gBufferStats.pages.load(); return v > 0 ? (uint64_t)v : 0; }
 // The per-frame rings of shared memory (constant buffer versions, upload staging): chunks only grow (GTA-174).
@@ -88,13 +98,22 @@ void PGMeshForget(uint64_t firstPage, uint32_t pageCount, int gone);
 void PGMeshReleaseStats(uint64_t *released, uint64_t *byFault, uint64_t *byForget, uint64_t *byTouch, uint64_t *mismatched, uint64_t *page,
                         uint64_t *orphanedPages, uint64_t *orphanWritten, uint64_t *orphanRead);
 int PGMeshReleaseOn(void);
+void PGMeshGone(uint32_t oid);
+void PGMeshForgetMesh(uint32_t oid, uint64_t firstPage, uint32_t pageCount, int gone);
+void PGMeshShareStats(uint64_t *pages, uint64_t *kept, uint64_t *held);
+void PGMeshVerifyStats(uint64_t *checked, uint64_t *bad, uint64_t *badPage, uint64_t *badOffset);
+uint64_t PGMeshRemapFallbacks(void);
+const char *PGMeshVerifyDetail(void);
+void PGMeshDeadStats(int64_t *bytes, uint64_t *freed, uint64_t *reusable);
+void PGMeshFaultWaitStats(uint64_t *waits, uint64_t *maxUs, uint64_t *slow, uint64_t *late);
 }
 Buffer::~Buffer() {
-	if (meshPages) PGMeshForget(meshPage, meshPages, 1);
+	if (meshPages) PGMeshForgetMesh(oid, meshPage, meshPages, 1);
+	if (bind & (1 | 2)) PGMeshGone(oid);
 	if (bind & 4) { gBufferStats.cbCount--; gBufferStats.cbBytes -= (int64_t)shadow.size(); if (version) gBufferStats.cbWritten--; }		// BIND_CB
 	if (slab >= 0) gSlabPending.push_back({currentSerial(), slab, (uint32_t)base, (bytes + kSlabAlign - 1) & ~(kSlabAlign - 1)});
 	if (!counted) return;
-	gBufferStats.count--; gBufferStats.bytes -= (int64_t)counted; if (slab < 0) gBufferStats.pages -= (int64_t)pageRound(counted);
+	gBufferStats.count--; gBufferStats.bytes -= (int64_t)counted; if (slab < 0) gBufferStats.pages -= (int64_t)pageRound(counted); else gBufferStats.inSlab -= (int64_t)counted;
 	if (bind & (1 | 2)) { gBufferStats.meshCount--; gBufferStats.meshBytes -= (int64_t)counted; }
 }
 Texture::~Texture() {
@@ -103,6 +122,8 @@ Texture::~Texture() {
 	if (skip > 1) gTextureStats.quarterSize--;
 	if (bcKind) { gTextureStats.bcGameBytes -= (int64_t)bcGameBytes; gTextureStats.bcGpuBytes -= (int64_t)gpuBytes; gTextureStats.kindBytes[bcKind][bcSrgb] -= (int64_t)gpuBytes; }
 	for (auto &it : compressedShadow) gTextureStats.shadowBytes -= (int64_t)it.second.size();
+	for (auto &l : etcPending) gTextureStats.etcPendingBytes -= (int64_t)l.data.size();
+	if (tex) { gTexKindBytes[memKind] -= (int64_t)gpuBytes; gTexKindCount[memKind]--; gFormatBytes[format & 1023] -= (int64_t)gpuBytes; }
 	delete depthProxy;
 }
 
@@ -185,6 +206,7 @@ struct PassInfo {
 	uint32_t samples = 1, width = 1, height = 1;
 	bool roDepth = false, roStencil = false;
 	uint64_t key = 0;
+	uint32_t packedMask = 0;		// colour targets in a packed float format (RG11B10, RGB9E5): GTA-77 statistics
 };
 
 struct PendingClear { uint32_t tex, mip, slice; bool depth; float color[4]; uint32_t flags; float z; uint32_t stencil; };
@@ -198,6 +220,9 @@ struct StageCache {
 };
 
 struct PendingQuery { Query *q; uint32_t seq; std::vector<uint32_t> slots; uint32_t type; uint64_t addr; };
+
+// Pictures presented since launch, for the Perf line's work per frame (NativePerfCounters.m, GTA-216).
+static std::atomic<uint64_t> presentedFrames{0};
 
 struct Renderer {
 	uint8_t *mem = nullptr;
@@ -470,7 +495,7 @@ static void slabRelease(int32_t slab, uint32_t off, uint32_t len) {
 	if (keep < 0) keep = getenv("PG_SLAB_KEEP") && atoi(getenv("PG_SLAB_KEEP"));		// 1: as before, for A/B runs
 	if (!keep && free.size() == 1 && free.begin()->first == 0 && free.begin()->second == kSlabBytes) {
 		gSlabs[slab].buf = nil; free.clear();
-		gBufferStats.pages -= kSlabBytes;
+		gBufferStats.pages -= kSlabBytes; gSlabTotal -= kSlabBytes;
 	}
 }
 static void slabReclaim() {
@@ -495,7 +520,7 @@ static bool slabAllocate(uint32_t bytes, int32_t &slab, uint32_t &off) {
 	while (empty < gSlabs.size() && gSlabs[empty].buf) empty++;		// a slot a released slab left
 	if (empty == gSlabs.size()) gSlabs.push_back({});
 	gSlabs[empty] = {buf, {{len, kSlabBytes - len}}};
-	gBufferStats.pages += kSlabBytes;
+	gBufferStats.pages += kSlabBytes; gSlabTotal += kSlabBytes;
 	slab = (int32_t)empty; off = 0;
 	return true;
 }
@@ -518,6 +543,125 @@ static Alloc frameAlloc(NSUInteger size, NSUInteger align = 256) {
 	NSUInteger off = f.off;
 	f.off += size;
 	return {b, off, (uint8_t *)b.contents + off};
+}
+
+// ---- GTA-77: triangle strips as indexed triangle lists, NaN/infinity clamp on packed float targets ---------------------
+// Another D3D11-on-Metal port found two faults on an iPhone 13 Pro (A15 GPU) that drew garbage streaks: degenerate
+// triangle strips with a vertex behind the camera (fixed by drawing those draws as indexed triangle lists, rewritten on
+// the CPU), and NaN or infinity written into R11G11B10 and RGB9E5 targets (filtered and clamped). Players report gravel
+// roads drawn as large rectangles (GTA-77, iPhone 14) and ground turning see-through (GTA-208); neither showed in the
+// simulator or on a Mac. Both fixes are on by default; PG_STRIP_LISTS_OLD=1 draws strips as strips again and
+// PG_NAN_CLAMP_OLD=1 writes what the shader computed. PG_NAN_CLAMP=all (test) cleans every float target.
+static std::atomic<int> gStripLists{1};		// 1: triangle strips go to the GPU as indexed triangle lists
+static std::atomic<int> gNanClamp{1};		// 0 off, 1 RG11B10/RGB9E5 targets, 2 every float target, 3 = 1 + float targets up to 256x256
+static int gLaunchStripLists = 1, gLaunchNanClamp = 1;		// what the environment chose; test shots go back to it
+static struct FixStats {
+	uint64_t stripDraws = 0, stripIndexed = 0, stripInstanced = 0, stripIndirect = 0, asList = 0, keptStrips = 0;
+	uint64_t stripTris = 0, listTris = 0, degenerate = 0, restarts = 0, converts = 0, dynamicConverts = 0, hits = 0;
+	double convertMs = 0;
+	uint64_t passes = 0, packedPasses = 0, packedDraws = 0, packedDispatches = 0, cleanedPasses = 0;
+} gFix;
+// PG_MR_DRAW_STATS=1 (test): strip draws and draws into packed float targets by program, every 10 s report.
+struct LabelStat { uint64_t strips = 0, stripIndexed = 0, stripVerts = 0, stripInst = 0, packed = 0; };
+static int gDrawStats = -1;
+static int gUninitTrace = -1;		// PG_MR_UNINIT=1: log textures read before anything wrote them, and draws skipped for compiles
+static int gPipeWaitSmall = -1;		// PG_PIPE_WAIT_SMALL=1: draws into float32 or small targets wait for their pipeline
+static std::unordered_map<std::string, LabelStat> gLabelStats;
+static std::unordered_map<std::string, uint64_t> gPackedTargets;		// "format WxH" of packed float targets drawn into
+
+// The largest finite value a target format keeps, as float bits (0: the format isn't cleaned in this mode). 64512 is
+// R11G11B10's blue maximum (red and green go to 65024, RGB9E5 to 65408): one bound for every channel.
+static uint32_t nanClampBits(MTLPixelFormat f, int mode, uint64_t texels) {
+	if (!mode) return 0;
+	if (f == MTLPixelFormatRG11B10Float || f == MTLPixelFormatRGB9E5Float) return 0x477C0000u;
+	if (mode == 1 || (mode == 3 && texels > 256 * 256)) return 0;		// 3: also float targets up to 256x256 (simulations, exposure)
+	if (f == MTLPixelFormatRGBA16Float || f == MTLPixelFormatRG16Float || f == MTLPixelFormatR16Float) return 0x477FE000u;		// 65504
+	if (f == MTLPixelFormatRGBA32Float || f == MTLPixelFormatRG32Float || f == MTLPixelFormatR32Float) return 0x7F7FFFFFu;		// FLT_MAX
+	return 0;
+}
+static bool packedFloat(MTLPixelFormat f) { return f == MTLPixelFormatRG11B10Float || f == MTLPixelFormatRGB9E5Float; }
+
+// Converted index lists, cached per index buffer range until the buffer is written again. An index buffer whose
+// ranges keep changing (rewritten between draws) is converted at every draw into the frame ring instead.
+struct StripList { id<MTLBuffer> buf = nil; NSUInteger off = 0; int32_t slab = -1; uint32_t bytes = 0, indices = 0, version = 0, rebuilds = 0; uint64_t lastFrame = 0; };
+static std::unordered_map<uint64_t, StripList> gStripCache;
+static std::unordered_map<uint32_t, std::vector<uint64_t>> gStripCacheKeys;		// index buffer -> its cache keys
+static std::unordered_set<uint32_t> gStripDynamic;
+static int64_t gStripCacheBytes = 0;
+static id<MTLBuffer> gStripPattern[2];		// non-indexed strips: 16- and 32-bit lists 0,1,2, 1,3,2, 2,3,4, 3,5,4, ...
+static uint32_t gStripPatternTris[2];
+static void stripFree(StripList &e) {
+	if (e.slab >= 0) gSlabPending.push_back({R->serial, e.slab, (uint32_t)e.off, (e.bytes + kSlabAlign - 1) & ~(kSlabAlign - 1)});
+	else if (e.buf) gBufferStats.pages -= (int64_t)pageRound(e.bytes);
+	gStripCacheBytes -= e.bytes;
+	e.buf = nil; e.slab = -1; e.off = 0; e.bytes = 0;
+}
+static bool stripAlloc(StripList &e, uint32_t bytes) {
+	int32_t slab; uint32_t off;
+	if (bytes <= slabLargest() && slabAllocate(bytes, slab, off)) { e.buf = gSlabs[slab].buf; e.off = off; e.slab = slab; }
+	else {
+		e.buf = [R->device newBufferWithLength:bytes options:MTLResourceStorageModeShared]; e.off = 0; e.slab = -1;
+		if (!e.buf) return false;
+		gBufferStats.pages += (int64_t)pageRound(bytes);
+	}
+	e.bytes = bytes; gStripCacheBytes += bytes;
+	return true;
+}
+static void stripForgetBuffer(uint32_t oid) {
+	gStripDynamic.erase(oid);
+	auto it = gStripCacheKeys.find(oid);
+	if (it == gStripCacheKeys.end()) return;
+	for (uint64_t key : it->second) { auto e = gStripCache.find(key); if (e != gStripCache.end()) { stripFree(e->second); gStripCache.erase(e); } }
+	gStripCacheKeys.erase(it);
+}
+// Every few seconds: lists not drawn for 20 s go (an index buffer the engine fills ring-style leaves many behind).
+static void stripEvict() {
+	if (R->frame % 256 || gStripCache.empty()) return;
+	for (auto it = gStripCache.begin(); it != gStripCache.end();) {
+		if (R->frame - it->second.lastFrame > 600) { stripFree(it->second); it = gStripCache.erase(it); } else ++it;
+	}
+	for (auto it = gStripCacheKeys.begin(); it != gStripCacheKeys.end();) {
+		auto &keys = it->second;
+		keys.erase(std::remove_if(keys.begin(), keys.end(), [](uint64_t k) { return !gStripCache.count(k); }), keys.end());
+		if (keys.empty()) it = gStripCacheKeys.erase(it); else ++it;
+	}
+}
+// D3D11 strip order: triangle k is (v[k], v[k+1], v[k+2]) for even k and (v[k], v[k+2], v[k+1]) for odd k, so every
+// triangle keeps its winding and its first (provoking) vertex. The cut index (all ones) ends a strip; the next vertex
+// starts a new one with an even triangle. Triangles that repeat an index have no area and are left out.
+template <class T> static uint32_t stripToList(const T *in, uint32_t count, T *out, uint64_t &degenerate, uint64_t &restarts) {
+	const T cut = (T)~(T)0;
+	uint32_t n = 0, run = 0;
+	T a = 0, b = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		const T c = in[i];
+		if (c == cut) { if (run) restarts++; run = 0; continue; }
+		if (run >= 2) {
+			if (a == b || b == c || a == c) degenerate++;
+			else if (!((run - 2) & 1)) { out[n++] = a; out[n++] = b; out[n++] = c; }
+			else { out[n++] = a; out[n++] = c; out[n++] = b; }
+		}
+		a = b; b = c; run++;
+	}
+	return n;
+}
+static bool stripPattern(int wide, uint32_t tris) {
+	if (gStripPatternTris[wide] >= tris) return true;
+	if (tris > (16u << 20)) return false;
+	uint32_t cap = std::max<uint32_t>(4096, std::max(tris, gStripPatternTris[wide] * 2));
+	if (!wide) cap = std::min<uint32_t>(cap, 0xfffd);		// 16-bit: vertices 0..65534 (0xffff stays unused)
+	if (cap < tris) return false;
+	const uint32_t isz = wide ? 4 : 2;
+	id<MTLBuffer> b = [R->device newBufferWithLength:(NSUInteger)cap * 3 * isz options:MTLResourceStorageModeShared];
+	if (!b) return false;
+	for (uint32_t k = 0; k < cap; k++) {
+		const uint32_t v[3] = {k, k & 1 ? k + 2 : k + 1, k & 1 ? k + 1 : k + 2};
+		for (int j = 0; j < 3; j++) { if (wide) ((uint32_t *)b.contents)[k * 3 + j] = v[j]; else ((uint16_t *)b.contents)[k * 3 + j] = (uint16_t)v[j]; }
+	}
+	if (gStripPattern[wide]) gBufferStats.pages -= (int64_t)pageRound(gStripPattern[wide].length);
+	gBufferStats.pages += (int64_t)pageRound(b.length);
+	gStripPattern[wide] = b; gStripPatternTris[wide] = cap;
+	return true;
 }
 
 // ---- engine memory ------------------------------------------------------------------------------------------------------
@@ -600,7 +744,9 @@ static View *view(uint32_t id, ObjKind k) { return R->objs.as<View>(id, k); }
 static State *state(uint32_t id) { return R->objs.as<State>(id, OState); }
 
 static uint32_t bcBlockBytes(int kind);
-static uint64_t gLiteBigSkip = 0;		// PG_LITE_BIG_MIP_SKIP (texels), 0 = off
+static void encodeClear(const PendingClear &c);
+static uint64_t gLiteBigSkip = 0;
+static uint64_t gZeroInitTargets = 0;		// GTA-77: render targets cleared to zeros when created		// PG_LITE_BIG_MIP_SKIP (texels), 0 = off
 static void createTexture(const uint32_t *p) {
 	uint32_t id = p[0], dim = p[1], w = std::max(1u, p[2]), h = std::max(1u, p[3]), d = std::max(1u, p[4]), mips = std::max(1u, p[5]);
 	uint32_t arraySize = std::max(1u, p[6]), dxgi = p[7], bind = p[8], samples = std::max(1u, p[9]);
@@ -609,7 +755,7 @@ static void createTexture(const uint32_t *p) {
 	t->format = m.format; t->dxgi = dxgi; t->bind = bind; t->dim = dim; t->width = w; t->height = dim == 1 ? 1 : h;
 	t->depthOrLayers = dim == 3 ? d : arraySize; t->mips = mips; t->samples = samples;
 	t->isDepth = isDepthFormat(m.format); t->hasStencil = hasStencil(m.format);
-	t->bcKind = m.bc; t->bcSrgb = m.srgb; t->bcNative = m.bcNative; t->astc = m.astc;
+	t->bcKind = m.bc; t->bcSrgb = m.srgb; t->bcNative = m.bcNative; t->astc = m.astc; t->etc = m.etc;
 	t->floatNoFilter = isFloat32(m.format) && !R->float32Filtering;
 	// Lite: only plain sampled 2D textures the game loads (shader resource only, so no render targets,
 	// staging or dynamic textures, which have one mip) with mips to spare. Small ones (lookup tables,
@@ -644,6 +790,7 @@ static void createTexture(const uint32_t *p) {
 		desc.swizzle = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleRed);
 	else if (m.a8) { t->alphaView = true; desc.usage |= MTLTextureUsagePixelFormatView; }
 	t->tex = [R->device newTextureWithDescriptor:desc];
+	if (t->etc && t->bcKind == 1) t->etcDesc = desc;		// until its first upload says whether it has transparent texels
 #if MR_TRACE
 	if (m.a8 && (bind & (BIND_RT | BIND_UAV))) logOnce("a8rt" + std::to_string(w) + "x" + std::to_string(h), "Metal renderer [trace]: A8 render target %u %ux%u bind %#x", id, w, h, bind);
 #endif
@@ -663,18 +810,57 @@ static void createTexture(const uint32_t *p) {
 				uint64_t mw = std::max(1u, w >> mip), mh = std::max(1u, t->height >> mip), md = dim == 3 ? std::max(1u, d >> mip) : arraySize;
 				blocks += (mw + 3) / 4 * ((mh + 3) / 4) * bcBlockBytes(m.bc) * md;
 			}
-			if (t->bcNative) t->gpuBytes = blocks;
+			if (t->bcNative || t->etc) t->gpuBytes = blocks;
 			else if (t->astc) t->gpuBytes = t->bcKind == 1 ? blocks * 2 : blocks;		// 16-byte blocks for BC1's 8, BC3's 16
 			else for (uint32_t mip = t->skip; mip < mips; mip++)
 				t->gpuBytes += (uint64_t)std::max(1u, w >> mip) * std::max(1u, t->height >> mip) * (dim == 3 ? std::max(1u, d >> mip) : arraySize) * samples * bytesPerTexel(m.format);
 		}
 		gTextureStats.gpuBytes += (int64_t)t->gpuBytes;
+		t->memKind = t->bcKind ? (t->bcNative ? PGTexBCNative : t->astc ? PGTexBCASTC : t->etc ? PGTexBCETC : PGTexBCDecoded) : gpuWritten ? PGTexTarget : !bind ? PGTexStaging : PGTexPlain;
+		gTexKindBytes[t->memKind] += (int64_t)t->gpuBytes; gTexKindCount[t->memKind]++; gFormatBytes[t->format & 1023] += (int64_t)t->gpuBytes;
+		// The game's big render targets, once per size and format (GTA-217: targets take 160 MB at 934x432).
+		if (t->memKind == PGTexTarget && t->gpuBytes >= (2u << 20))
+			logOnce("bigrt" + std::to_string(w) + "x" + std::to_string(h) + "-" + std::to_string(dxgi) + "-" + std::to_string(arraySize) + "-" + std::to_string(mips),
+			        "Metal renderer: render target %ux%u x%u, %u levels, DXGI %u, bind %#x, %u samples: %.1f MB", w, h, dim == 3 ? d : arraySize, mips, dxgi, bind, samples, t->gpuBytes / 1048576.0);
 		if (t->skip) gTextureStats.halfSize++;
 		if (t->skip > 1) gTextureStats.quarterSize++;
 		if (t->bcKind && getenv("PG_TRACE_BC_FORMATS")) logOnce("bcdxgi" + std::to_string(dxgi), "Metal renderer [trace]: BC texture format DXGI %u (first %ux%u)", dxgi, w, h);
 		if (t->bcKind) { gTextureStats.bcGameBytes += (int64_t)t->bcGameBytes; gTextureStats.bcGpuBytes += (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] += (int64_t)t->gpuBytes; }
 	}
 	R->objs.set(id, t);
+#if MR_TRACE
+	// Test (simulator, GTA-77): PG_TEST_RT_FILL=nan fills every new 32-bit float render target with NaN, as memory a
+	// phone's GPU hands out unwritten may hold; the simulator's starts as zeros.
+	static const char *rtFill = getenv("PG_TEST_RT_FILL");
+	if (rtFill && t->tex && (bind & BIND_RT) && !t->isDepth && isFloat32(t->format) && t->samples == 1 && dim == 2) {
+		for (uint32_t mip = 0; mip < t->tex.mipmapLevelCount; mip++) for (uint32_t s = 0; s < t->tex.arrayLength; s++) {
+			PendingClear c{id, mip, s, false, {NAN, NAN, NAN, NAN}, 0, 0, 0};
+			encodeClear(c);
+		}
+		logOnce("rtfill", "Metal renderer [test]: new 32-bit float render targets start as NaN (PG_TEST_RT_FILL)");
+		t->written = false;
+	}
+#endif
+	// GTA-77: a new render target or storage texture starts as zeros, as D3D11 drivers hand out new GPU memory. Metal
+	// promises nothing: on a phone it can hold whatever the memory held before. The game's water simulation (256x256
+	// R32F feedback maps) reads its last state before writing it; when its passes were skipped while their pipelines
+	// compiled (the first launch after an install or update), it read that leftover memory, a NaN stayed in the
+	// simulation for the whole session, and part of the water (by the Alamo Sea trailer park) was never drawn.
+	// PG_RT_ZERO_INIT_OLD=1 leaves new targets as Metal gives them.
+	static int zeroOld = -1;
+	if (zeroOld < 0) zeroOld = getenv("PG_RT_ZERO_INIT_OLD") && strcmp(getenv("PG_RT_ZERO_INIT_OLD"), "0");
+	if (!zeroOld && t->tex && (bind & (BIND_RT | BIND_DS | BIND_UAV)) && dim != 1) {
+		if (!gZeroInitTargets) logf("Metal renderer: new render targets start as zeros, as on D3D11 (GTA-77; PG_RT_ZERO_INIT_OLD=1 leaves them as Metal gives them).");
+		const bool cube = t->tex.textureType == MTLTextureTypeCube || t->tex.textureType == MTLTextureTypeCubeArray;
+		for (uint32_t mip = 0; mip < t->tex.mipmapLevelCount; mip++) {
+			const uint32_t slices = t->dim == 3 ? std::max<uint32_t>(1, (uint32_t)t->tex.depth >> mip) : (uint32_t)t->tex.arrayLength * (cube ? 6 : 1);
+			for (uint32_t s = 0; s < slices; s++) {
+				PendingClear c{id, mip, s, t->isDepth, {0, 0, 0, 0}, t->isDepth ? 3u : 0u, 0.0f, 0};
+				encodeClear(c);
+			}
+		}
+		gZeroInitTargets++;
+	}
 }
 
 static void mipExtent(Texture *t, uint32_t mip, uint32_t &w, uint32_t &h, uint32_t &d) {
@@ -685,11 +871,18 @@ static uint32_t bcBlockBytes(int kind) { return kind == 1 || kind == 4 ? 8 : 16;
 
 // The game reads a few BC textures back to the CPU, all small ones in testing (16x128, 64x64), and
 // a CPU copy of every BC texture cost as much RAM as the game's whole BC budget. Only textures up
-// to 128x128 keep their original blocks.
-static const uint64_t kMaxShadowTexels = 128 * 128;
+// to 128x128 kept their original blocks: still 60-80 MB of malloc in a city drive (GTA-217). The readbacks seen since
+// are all BC1 of 4,096 texels or fewer (128x32, 64x32, 4x4 in the benchmark; 16x128 and 64x64 before), so only those
+// could keep a copy. PG_BC_COPY_TEXELS sets the limit; a readback that finds no copy says so once. v1.5.2 keeps the old
+// 16,384 (128x128) by default: 4,096 saves about 50 MB but wasn't cleared by the lab's teleport stress in time (2026-10-27).
+static uint64_t maxShadowTexels() {
+	static uint64_t texels = 0;
+	if (!texels) { const char *v = getenv("PG_BC_COPY_TEXELS"); long n = v ? atol(v) : 16384; texels = (uint64_t)(n >= 16 && n <= (1 << 24) ? n : 16384); }
+	return texels;
+}
 static void storeCompressed(Texture *t, uint32_t mip, uint32_t slice, uint32_t x, uint32_t y, uint32_t z, uint32_t w, uint32_t h, uint32_t d,
                             uint32_t bpr, uint32_t rpi, const uint8_t *data, size_t size) {
-	if ((uint64_t)t->width * t->height > kMaxShadowTexels) return;
+	if ((uint64_t)t->width * t->height > maxShadowTexels()) return;
 	uint32_t mw, mh, md; mipExtent(t, mip, mw, mh, md);
 	uint32_t bb = bcBlockBytes(t->bcKind), pitch = (mw + 3) / 4 * bb, rows = (mh + 3) / 4, count = (w + 3) / 4 * bb, uploadRows = (h + 3) / 4;
 	size_t sourceSlice = (size_t)bpr * (rpi ? rpi : uploadRows);
@@ -791,6 +984,53 @@ static void scanHeld() {
 	     foundTex / MB, texBytes / MB, (unsigned long long)nTex, (unsigned long long)texCount, foundMesh / MB, meshBytes / MB, (unsigned long long)nMesh, (unsigned long long)meshCount,
 	     scanned / MB, compressed / MB, memSize / MB, nowMs() - t0);
 }
+// A BC1 texture made ETC2 (GTA-217) whose first upload has transparent texels: ETC2 RGB has no alpha, so it is made
+// ASTC 4x4 instead (exact, as before), while nothing has used it yet.
+static void etcBC1ToASTC(Texture *t) {
+	MTLTextureDescriptor *desc = t->etcDesc;
+	t->etcDesc = nil; t->etcDecided = true;
+	if (!desc) { logOnce("etcastcdesc", "Metal renderer: a BC1 texture with transparent texels stays ETC2 (no descriptor)"); return; }
+	desc.pixelFormat = t->bcSrgb ? MTLPixelFormatASTC_4x4_sRGB : MTLPixelFormatASTC_4x4_LDR;
+	id<MTLTexture> tex = [R->device newTextureWithDescriptor:desc];
+	if (!tex) return;
+	gTextureStats.gpuBytes -= (int64_t)t->gpuBytes; gTextureStats.bcGpuBytes -= (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] -= (int64_t)t->gpuBytes;
+	gTexKindBytes[t->memKind] -= (int64_t)t->gpuBytes; gTexKindCount[t->memKind]--; gFormatBytes[t->format & 1023] -= (int64_t)t->gpuBytes;
+	t->tex = tex; t->format = desc.pixelFormat; t->etc = false; t->astc = true; t->views.clear();
+	t->gpuBytes = tex.allocatedSize ? tex.allocatedSize : t->gpuBytes * 2;		// the simulator reports no sizes: ASTC is twice ETC2 here
+	t->memKind = PGTexBCASTC;
+	gTextureStats.gpuBytes += (int64_t)t->gpuBytes; gTextureStats.bcGpuBytes += (int64_t)t->gpuBytes; gTextureStats.kindBytes[t->bcKind][t->bcSrgb] += (int64_t)t->gpuBytes;
+	gTexKindBytes[t->memKind] += (int64_t)t->gpuBytes; gTexKindCount[t->memKind]++; gFormatBytes[t->format & 1023] += (int64_t)t->gpuBytes;
+	gTextureStats.etcToASTC++;
+}
+// BC blocks re-encoded as ETC2/EAC or ASTC (whichever the texture is now) and uploaded. False: the texture is neither.
+static bool uploadConverted(Texture *t, uint32_t level, uint32_t slice, uint32_t x, uint32_t y, uint32_t z, uint32_t w, uint32_t h, uint32_t d,
+                            uint32_t bpr, uint32_t rpi, const uint8_t *data, size_t size) {
+	if (!t->etc && !t->astc) return false;
+	size_t outSize = 0; uint32_t outBpr = 0, outRpi = 0;
+	double c0 = nowMs();
+	void *blocks = t->etc ? PGTranscodeBCToETC(t->bcKind, w, h, d, bpr, rpi, data, size, &outSize, &outBpr, &outRpi)
+	                      : PGTranscodeBCToASTC(t->bcKind, w, h, d, bpr, rpi, data, size, &outSize, &outBpr, &outRpi);
+	const uint64_t micros = (uint64_t)((nowMs() - c0) * 1000);
+	gTextureStats.convertMicros += micros; gTextureStats.converts++; if (t->etc) gTextureStats.etcMicros += micros;
+	if (!blocks) { gTextureStats.decodeFailures++; logOnce("convfail" + std::to_string(t->bcKind), "Metal renderer: BC%u upload smaller than its region", t->bcKind); return true; }
+	uploadBlocks(t, level, slice, x, y, z, w, h, d, outBpr, outBpr * outRpi, (const uint8_t *)blocks);
+	free(blocks);
+	t->proxyDirty = true; t->written = true;		// written (GTA-77): no longer a never-written texture
+	return true;
+}
+// The GPU is about to use a BC1 texture still waiting as ETC2: decide (ASTC if any waiting level has a transparent
+// texel), encode and upload what waited.
+static void etcSettle(Texture *t) {
+	if (!t || !t->etc || t->etcDecided) return;
+	t->etcDecided = true;
+	if (t->etcAlpha) etcBC1ToASTC(t);
+	t->etcDesc = nil;
+	for (auto &l : t->etcPending) {
+		gTextureStats.etcPendingBytes -= (int64_t)l.data.size();
+		uploadConverted(t, l.level, l.slice, l.x, l.y, l.z, l.w, l.h, l.d, l.bpr, l.rpi, l.data.data(), l.data.size());
+	}
+	std::vector<Texture::EtcPending>().swap(t->etcPending);
+}
 static void uploadTextureInner(const uint32_t *p) {
 	Texture *t = texture(p[0]);
 	if (!t || !t->tex) return;
@@ -825,7 +1065,7 @@ static void uploadTextureInner(const uint32_t *p) {
 			else for (uint32_t l = 0; l < d; l++) [b copyFromBuffer:a.buf sourceOffset:a.off + (NSUInteger)l * imageBytes sourceBytesPerRow:bpr sourceBytesPerImage:imageBytes sourceSize:MTLSizeMake(w, h, 1) toTexture:t->tex destinationSlice:slice + l destinationLevel:level destinationOrigin:MTLOriginMake(x, y, 0)];
 			t->lastUse = R->serial;
 		}
-		t->proxyDirty = true;
+		t->proxyDirty = true; t->written = true;
 		return;
 	}
 	if (t->bcKind) {
@@ -849,17 +1089,18 @@ static void uploadTextureInner(const uint32_t *p) {
 		}
 #endif
 		size_t outSize = 0;
-		if (t->astc) {		// rewritten block by block, then uploaded as blocks (rows count block rows)
-			uint32_t astcBpr = 0, astcRpi = 0;
-			double c0 = nowMs();
-			void *blocks = PGTranscodeBCToASTC(t->bcKind, w, h, d, bpr, rpi, data, size, &outSize, &astcBpr, &astcRpi);
-			gTextureStats.convertMicros += (uint64_t)((nowMs() - c0) * 1000); gTextureStats.converts++;
-			if (!blocks) { gTextureStats.decodeFailures++; logOnce("astcfail", "Metal renderer: BC%u upload smaller than its region", t->bcKind); return; }
-			uploadBlocks(t, level, slice, x, y, z, w, h, d, astcBpr, astcBpr * astcRpi, (const uint8_t *)blocks);
-			free(blocks);
-			t->proxyDirty = true;
-			return;
+		if (t->etc && t->bcKind == 1) {
+			const bool transparent = PGBC1HasTransparency(w, h, d, bpr, rpi, data, size);
+			if (!t->etcDecided) {		// waits for the GPU's first use (etcSettle)
+				t->etcAlpha |= transparent;
+				t->etcPending.push_back({level, slice, x, y, z, w, h, d, bpr, rpi, std::vector<uint8_t>(data, data + size)});
+				gTextureStats.etcPendingBytes += (int64_t)size;
+				return;
+			}
+			if (transparent) { gTextureStats.etcAlphaLost++; logOnce("etcalpha", "Metal renderer: a BC1 texture already used as ETC2 got transparent texels in a later upload (%ux%u, level %u); they show opaque", t->width, t->height, mip); }
 		}
+		// Re-encoded block by block as ETC2/EAC (GTA-217) or ASTC, then uploaded as blocks (rows count block rows)
+		if (uploadConverted(t, level, slice, x, y, z, w, h, d, bpr, rpi, data, size)) return;
 		double c0 = nowMs();
 		decoded = PGDecodeBC(t->bcKind, w, h, d, bpr, rpi, data, size, &outSize);
 		gTextureStats.convertMicros += (uint64_t)((nowMs() - c0) * 1000); gTextureStats.converts++;
@@ -888,7 +1129,7 @@ static void uploadTextureInner(const uint32_t *p) {
 		t->lastUse = R->serial;
 	}
 	if (decoded) free(decoded);
-	t->proxyDirty = true;
+	t->proxyDirty = true; t->written = true;
 }
 
 // ---- buffers ------------------------------------------------------------------------------------------------------------
@@ -909,7 +1150,7 @@ static void createBuffer(const uint32_t *p) {
 		else b->buf = [R->device newBufferWithLength:b->bytes options:MTLResourceStorageModeShared];
 		if (b->buf) {
 			b->counted = b->bytes;
-			gBufferStats.count++; gBufferStats.bytes += b->bytes; if (b->slab < 0) gBufferStats.pages += (int64_t)pageRound(b->bytes);
+			gBufferStats.count++; gBufferStats.bytes += b->bytes; if (b->slab < 0) gBufferStats.pages += (int64_t)pageRound(b->bytes); else gBufferStats.inSlab += b->bytes;
 			if (b->bind & (BIND_VB | BIND_IB)) { gBufferStats.meshCount++; gBufferStats.meshBytes += b->bytes; }
 		}
 		if (b->buf) memset((uint8_t *)b->buf.contents + b->base, 0, b->bytes);
@@ -925,7 +1166,7 @@ static void uploadBuffer(const uint32_t *p, bool noOverwrite) {
 	if (b->bind & (BIND_VB | BIND_IB)) gMeshWrites[p[0]]++;
 	uint32_t offset = p[1], size = p[2];
 	const uint8_t *data = (const uint8_t *)(p + 3);
-	if (b->meshPages) { PGMeshForget(b->meshPage, b->meshPages, 0); b->meshPages = 0; }		// rewritten: the engine's bytes go back first
+	if (b->meshPages) { PGMeshForgetMesh(b->oid, b->meshPage, b->meshPages, 0); b->meshPages = 0; }		// rewritten: the engine's bytes go back first
 	if ((b->bind & BIND_CB) && offset < b->size) {
 		if (b->shadow.empty()) { b->shadow.assign(b->size, 0); gBufferStats.cbBytes += b->size; }
 		memcpy(b->shadow.data() + offset, data, std::min<size_t>(size, b->shadow.size() - offset));
@@ -947,7 +1188,7 @@ static void uploadBuffer(const uint32_t *p, bool noOverwrite) {
 		if (offset || size < b->bytes) memcpy(fresh.contents, (const uint8_t *)b->buf.contents + b->base, b->bytes);
 		if (b->slab >= 0) {		// a slab buffer rewritten while in use moves to its own storage
 			gSlabPending.push_back({R->serial, b->slab, (uint32_t)b->base, (b->bytes + kSlabAlign - 1) & ~(kSlabAlign - 1)});
-			gBufferStats.pages += (int64_t)pageRound(b->bytes);
+			gBufferStats.pages += (int64_t)pageRound(b->bytes); gBufferStats.inSlab -= (int64_t)b->counted;
 			b->slab = -1; b->base = 0;
 		}
 		b->buf = fresh;
@@ -988,6 +1229,7 @@ static MTLTextureType viewType(TexDim dim, bool ms) {
 }
 static id<MTLTexture> srvTexture(View *v, Texture *t, const ResBinding &b) {
 	if (!t->tex) return nil;
+	etcSettle(t);
 	bool ms = b.kind == RTextureMS || b.kind == RDepthMS;
 	MTLTextureType type = viewType(b.dim, ms);
 	MTLPixelFormat fmt = t->format;
@@ -1081,7 +1323,7 @@ static void encodeClear(const PendingClear &c) {
 	}
 	id<MTLRenderCommandEncoder> e = [commandBuffer() renderCommandEncoderWithDescriptor:d];
 	[e endEncoding];
-	t->lastUse = R->serial; t->proxyDirty = true;
+	t->lastUse = R->serial; t->proxyDirty = true; t->written = true;
 }
 static void flushClears() {
 	if (R->clears.empty()) return;
@@ -1133,7 +1375,7 @@ static bool ensurePass() {
 		a.storeAction = MTLStoreActionStore;
 		info.colors[i] = a.texture.pixelFormat; info.colorCount = i + 1;
 		info.samples = t->samples; info.width = std::max(1u, t->width >> a.level); info.height = std::max(1u, t->height >> a.level);
-		t->lastUse = R->serial; t->proxyDirty = true;
+		t->lastUse = R->serial; t->proxyDirty = true; t->written = true;
 		any = true;
 	}
 	Texture *dt = texture(R->ds.tex);
@@ -1153,7 +1395,7 @@ static bool ensurePass() {
 		}
 		info.depth = dt->format;
 		if (!any) { info.width = std::max(1u, dt->width >> mip); info.height = std::max(1u, dt->height >> mip); info.samples = dt->samples; }
-		dt->lastUse = R->serial; dt->proxyDirty = true;
+		dt->lastUse = R->serial; dt->proxyDirty = true; dt->written = true;
 		any = true;
 	}
 	if (!any) return false;
@@ -1170,6 +1412,27 @@ static bool ensurePass() {
 	R->pass = [commandBuffer() renderCommandEncoderWithDescriptor:d];
 	R->rtDirty = false;
 	R->cache[0].reset(); R->cache[1].reset();
+	// GTA-77: the colour outputs the pixel shaders clean of NaN and infinity in this pass (pg_nanc: mask, a zero the
+	// compiler can't see, then each target's largest finite value as float bits). Bound in every pass: every game pixel
+	// shader built with the clean reads it.
+	{
+		struct { uint32_t mask, salt, pad[2], maxBits[8]; } c = {};
+		const int mode = gNanClamp.load(std::memory_order_relaxed);
+		for (uint32_t i = 0; i < info.colorCount; i++) {
+			if (packedFloat(info.colors[i])) R->passInfo.packedMask |= 1u << i;
+			if (uint32_t bits = nanClampBits(info.colors[i], mode, (uint64_t)info.width * info.height)) { c.mask |= 1u << i; c.maxBits[i] = bits; }
+		}
+		[R->pass setFragmentBytes:&c length:sizeof c atIndex:kNanClampBuffer];
+		gFix.passes++;
+		if (R->passInfo.packedMask) gFix.packedPasses++;
+		if (c.mask) gFix.cleanedPasses++;
+		if (R->passInfo.packedMask && gDrawStats > 0) {
+			for (uint32_t i = 0; i < info.colorCount; i++) if (packedFloat(info.colors[i])) {
+				char k[64]; snprintf(k, sizeof k, "%s %ux%u", info.colors[i] == MTLPixelFormatRG11B10Float ? "RG11B10" : "RGB9E5", info.width, info.height);
+				gPackedTargets[k]++;
+			}
+		}
+	}
 	R->appliedRs = UINT32_MAX; R->appliedRef = UINT32_MAX; R->appliedDss = nil; R->appliedPipe = nil;
 	R->appliedBlend[0] = -1; R->viewportApplied = false; R->appliedScissor.x = UINT32_MAX;
 	R->pipeDirty = true;
@@ -1301,7 +1564,7 @@ static Pipe *getPipeline(Shader *vs, Shader *ps, Layout *lay) {
 	d.alphaToCoverageEnabled = bw && bw[0] && psi && std::find(psi->outputs.begin(), psi->outputs.end(), 0u) != psi->outputs.end();
 	d.inputPrimitiveTopology = topologyClass(R->topo);
 	if (R->topo == 1) logOnce("points", "Metal renderer: point-list draws (%s): shaders do not write a point size", pipe->label.c_str());
-	R->pipesPending++; R->pipesMade++;
+	R->pipesPending++; R->pipesMade++; gPipelinesMade++;
 	Renderer *r = R;
 	std::string label = pipe->label;
 	[R->device newRenderPipelineStateWithDescriptor:d completionHandler:^(id<MTLRenderPipelineState> s, NSError *error) {
@@ -1476,7 +1739,7 @@ static bool bindStage(int stage, ShaderInfo *info) {
 			Texture *t = u && !u->isBuf ? texture(u->res) : nullptr;
 			id<MTLTexture> v = t ? uavTexture(u, t, b) : nil;
 			if (!v) { logOnce("nouav" + info->label, "Metal renderer: %s: storage texture u%u unbound", info->label.c_str(), b.binding - 160); v = dummyTexture(RStorageTex, b.dim, b.sample); }
-			else { t->lastUse = R->serial; t->proxyDirty = true; }
+			else { t->lastUse = R->serial; t->proxyDirty = true; t->written = true; }
 			setTexture(stage, v, b.index);
 			break;
 		}
@@ -1489,6 +1752,9 @@ static bool bindStage(int stage, ShaderInfo *info) {
 					if (t->depthProxy && t->depthProxy->tex) tex = srvTexture(v, t->depthProxy, b);
 				} else tex = srvTexture(v, t, b);
 				if (tex) { t->lastUse = R->serial; if (t->floatNoFilter && b.pairedSampler >= 0) texFloatNoFilterSamplers |= 1u << b.pairedSampler; }
+				if (tex && !t->written && gUninitTrace > 0)		// GTA-77 (PG_MR_UNINIT=1): a texture read before anything wrote it
+					logOnce("uninit" + std::to_string(t->oid), "Metal renderer [uninit]: texture %u (%ux%u, DXGI %u, bind %#x) read by %s before anything wrote it",
+					        t->oid, t->width, t->height, t->dxgi, t->bind, info->label.c_str());
 			}
 			setTexture(stage, tex ?: dummyTexture(b.kind, b.dim, b.sample), b.index);
 		}
@@ -1657,9 +1923,23 @@ static inline void traceDraw(const uint32_t *, Shader *, Shader *, Layout *, con
 static void capture(Texture *t, const std::string &name, id<MTLRenderPipelineState> pipe = nil, id<MTLTexture> second = nil);
 static void drawInner(const uint32_t *p);
 static const char *drawOutcome;
+// GTA-77 test shots: what each pictured frame drew, by program (Documents/NativeFrames/<folder>/<name>.txt next to the
+// picture): draws, vertices (count x instances) and skipped draws with their reason. Kept only while shots are queued.
+struct CensusRow { uint64_t draws = 0, verts = 0, skipped = 0; std::string reasons; };
+static std::atomic<bool> gCensusOn{false};
+static std::map<std::string, CensusRow> gCensus;
+static Pipe *gDrawPipe;
 static void draw(const uint32_t *p) {
 	drawOutcome = "ok";
+	gDrawPipe = nullptr;
 	drawInner(p);
+	if (gCensusOn.load(std::memory_order_relaxed)) {
+		std::string key = gDrawPipe ? gDrawPipe->label : std::string("(") + drawOutcome + ")";
+		key += R->topo == 5 ? " [strip]" : R->topo == 4 ? "" : " [topo " + std::to_string(R->topo) + "]";
+		CensusRow &c = gCensus[key];
+		if (!strncmp(drawOutcome, "ok", 2)) { c.draws++; c.verts += p[0] >= 4 ? 0 : (uint64_t)p[1] * std::max(1u, p[2]); }
+		else { c.skipped++; if (c.reasons.find(drawOutcome) == std::string::npos) c.reasons += std::string(c.reasons.empty() ? "" : ",") + drawOutcome; }
+	}
 #if MR_TRACE
 	if (T.state == 2) {
 		traceDraw(p, R->objs.as<Shader>(R->shader[0], OShader), R->objs.as<Shader>(R->shader[1], OShader), R->objs.as<Layout>(R->layout, OLayout), drawOutcome);
@@ -1824,6 +2104,113 @@ static void fixPedSpikes(Shader *vs, Layout *lay, const uint32_t *p) {
 	}
 }
 
+// A non-indexed strip whose vertices repeat a position (strips joined by repeated vertices): its list without the
+// triangles that have no area, in the frame ring. 0 when no triangle repeats a position (or the positions can't be
+// read: no per-vertex POSITION, or a strip too long to check), so the shared pattern draws it.
+static uint32_t stripPositions(Layout *lay, uint32_t start, uint32_t count, Alloc &out) {
+	if (!lay || count > 4096) return 0;
+	const LayoutEl *pe = nullptr;
+	for (auto &e : lay->els) if (e.sem == 2013849738u && !e.idx && e.cls == 0) { pe = &e; break; }		// POSITION (FNV-1a of the name)
+	uint32_t bytes = 0;
+	if (!pe || pe->slot >= 16 || vertexFormat(pe->fmt, &bytes) == MTLVertexFormatInvalid) return 0;
+	const auto &v = R->vb[pe->slot];
+	Buffer *vb = buffer(v.buf);
+	if (!vb || !vb->buf || !v.stride || (vb->bind & BIND_UAV)) return 0;
+	if ((uint64_t)v.offset + ((uint64_t)start + count - 1) * v.stride + pe->offset + bytes > vb->bytes) return 0;
+	const uint8_t *p = (const uint8_t *)vb->buf.contents + vb->base + v.offset + (size_t)start * v.stride + pe->offset;
+	auto same = [&](uint32_t a, uint32_t b) { return !memcmp(p + (size_t)a * v.stride, p + (size_t)b * v.stride, bytes); };
+	uint32_t first = UINT32_MAX;
+	for (uint32_t k = 0; k + 2 < count && first == UINT32_MAX; k++) if (same(k, k + 1) || same(k + 1, k + 2) || same(k, k + 2)) first = k;
+	if (first == UINT32_MAX) return 0;
+	const bool wide = count - 1 >= 0xffff;
+	out = frameAlloc((size_t)(count - 2) * 3 * (wide ? 4 : 2), 16);
+	uint32_t n = 0;
+	for (uint32_t k = 0; k + 2 < count; k++) {
+		if (k >= first && (same(k, k + 1) || same(k + 1, k + 2) || same(k, k + 2))) { gFix.degenerate++; continue; }
+		const uint32_t t[3] = {k, k & 1 ? k + 2 : k + 1, k & 1 ? k + 1 : k + 2};
+		for (int j = 0; j < 3; j++) { if (wide) ((uint32_t *)out.ptr)[n++] = t[j]; else ((uint16_t *)out.ptr)[n++] = (uint16_t)t[j]; }
+	}
+	return n ? n : UINT32_MAX;		// UINT32_MAX: every triangle repeats a position
+}
+
+// GTA-77: a triangle strip draw as an indexed triangle list. False: draw it as a strip (no memory for the list).
+static bool drawStripAsList(bool indexed, Buffer *ib, uint32_t isz, uint32_t start, uint64_t count, uint64_t inst, int32_t baseVertex,
+                            bool foldV, uint32_t vFirst, uint32_t iFirst, Layout *lay) {
+	if (!indexed) {		// vertices 0..count-1 from the draw's first vertex: one shared list, or this strip's own without repeats
+		if (count < 3) return true;		// no triangle
+		const int wide = count - 1 >= 0xffff;
+		const uint32_t tris = (uint32_t)(count - 2);
+		Alloc own{};
+		const double t0 = nowMs();
+		const uint32_t n = stripPositions(lay, start, (uint32_t)count, own);
+		gFix.convertMs += nowMs() - t0;
+		gFix.stripTris += tris;
+		if (n == UINT32_MAX) return true;		// nothing with an area
+		if (n) {
+			gFix.listTris += n / 3; gFix.converts++; gFix.dynamicConverts++;
+			[R->pass drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:n indexType:wide ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
+			                  indexBuffer:own.buf indexBufferOffset:own.off instanceCount:inst baseVertex:vFirst baseInstance:iFirst];
+			return true;
+		}
+		if (!stripPattern(wide, tris)) return false;
+		[R->pass drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:(NSUInteger)tris * 3 indexType:wide ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
+		                  indexBuffer:gStripPattern[wide] indexBufferOffset:0 instanceCount:inst baseVertex:vFirst baseInstance:iFirst];
+		gFix.listTris += tris;
+		return true;
+	}
+	if (ib->bind & BIND_UAV) return false;		// the GPU may write it: the CPU copy can't be trusted
+	const uint32_t ibId = R->ib.buf, version = gMeshWrites[ibId];
+	const uint64_t at = (uint64_t)R->ib.offset + (uint64_t)start * isz;
+	const uint64_t key = fnv(fnv(fnv(fnv(1469598103934665603ull, ibId), at), count), isz);
+	const bool dynamic = gStripDynamic.count(ibId) != 0;
+	id<MTLBuffer> buf = nil; NSUInteger off = 0; uint32_t n = 0;
+	StripList *e = nullptr;
+	if (!dynamic) {
+		auto it = gStripCache.find(key);
+		if (it != gStripCache.end() && it->second.version == version) { e = &it->second; gFix.hits++; }
+	}
+	if (e) { buf = e->buf; off = e->off; n = e->indices; e->lastFrame = std::max<uint64_t>(1, R->frame); }
+	else {
+		const double t0 = nowMs();
+		static std::vector<uint8_t> scratch;
+		if (scratch.size() < count * 3 * isz) scratch.resize(count * 3 * isz);
+		const uint8_t *src = (const uint8_t *)ib->buf.contents + ib->base + at;
+		uint64_t degenerate = 0, restarts = 0;
+		n = isz == 2 ? stripToList((const uint16_t *)src, (uint32_t)count, (uint16_t *)scratch.data(), degenerate, restarts)
+		             : stripToList((const uint32_t *)src, (uint32_t)count, (uint32_t *)scratch.data(), degenerate, restarts);
+		gFix.degenerate += degenerate; gFix.restarts += restarts; gFix.converts++;
+		const uint32_t bytes = n * isz;
+		bool perDraw = dynamic;
+		if (!dynamic) {
+			auto found = gStripCache.find(key);
+			if (found == gStripCache.end()) { found = gStripCache.emplace(key, StripList()).first; gStripCacheKeys[ibId].push_back(key); }
+			StripList &s = found->second;
+			if (s.lastFrame) {		// converted before, and the buffer was written since
+				stripFree(s);
+				if (++s.rebuilds >= 3) { stripForgetBuffer(ibId); gStripDynamic.insert(ibId); perDraw = true; }		// again and again: per draw from now on
+			}
+			if (!perDraw) {
+				s.version = version; s.indices = n; s.lastFrame = std::max<uint64_t>(1, R->frame);
+				if (n) {
+					if (!stripAlloc(s, bytes)) { gFix.convertMs += nowMs() - t0; return false; }
+					memcpy((uint8_t *)s.buf.contents + s.off, scratch.data(), bytes);
+					buf = s.buf; off = s.off;
+				}
+			}
+		}
+		if (perDraw) {
+			if (n) { Alloc a = frameAlloc(bytes, 16); memcpy(a.ptr, scratch.data(), bytes); buf = a.buf; off = a.off; }
+			gFix.dynamicConverts++;
+		}
+		gFix.convertMs += nowMs() - t0;
+	}
+	gFix.stripTris += count >= 3 ? count - 2 : 0; gFix.listTris += n / 3;
+	if (!n) return true;		// every triangle repeats an index (or the strip is empty): nothing to draw, as before
+	[R->pass drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:n indexType:isz == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32 indexBuffer:buf
+	              indexBufferOffset:off instanceCount:inst baseVertex:foldV ? 0 : baseVertex baseInstance:iFirst];
+	return true;
+}
+
 static void drawInner(const uint32_t *p) {
 	uint32_t kind = p[0], count = p[1], inst = p[2], start = p[3], startInstance = p[5];
 	int32_t baseVertex = (int32_t)p[4];
@@ -1843,6 +2230,7 @@ static void drawInner(const uint32_t *p) {
 		R->lastPipe = pipe;
 		R->pipeDirty = false;
 	}
+	gDrawPipe = pipe;
 	// A pipeline still compiling: wait for it up to 8 ms per frame in all, so a prop isn't missing
 	// for a few frames the first time it's seen; past the budget the draw is skipped as before.
 	if (!pipe->ready.load(std::memory_order_acquire) && R->pipeWaitMs < 8) {
@@ -1850,7 +2238,23 @@ static void drawInner(const uint32_t *p) {
 		while (!pipe->ready.load(std::memory_order_acquire) && R->pipeWaitMs + (nowMs() - start) < 8) usleep(250);
 		R->pipeWaitMs += nowMs() - start;
 	}
-	if (!pipe->ready.load(std::memory_order_acquire)) { drawOutcome = "SKIP-pending"; R->pendingSkips++; R->skipped++; R->pipeDirty = true; return; }
+	// GTA-77 test switch PG_PIPE_WAIT_SMALL=1: a draw into a 32-bit float target or a small one (simulation and feedback
+	// textures: the water simulation's 256x256 R32F maps, 1x1 exposure) waits for its pipeline instead of being skipped,
+	// because a skipped step of a simulation stays wrong for the rest of the session.
+	if (!pipe->ready.load(std::memory_order_acquire) && gPipeWaitSmall > 0 &&
+	    ((R->passInfo.colorCount && isFloat32(R->passInfo.colors[0])) || (uint64_t)R->passInfo.width * R->passInfo.height <= 256 * 256)) {
+		double start = nowMs();
+		while (!pipe->ready.load(std::memory_order_acquire) && nowMs() - start < 3000) usleep(250);
+		R->pipeWaitMs += nowMs() - start;
+		logOnce("pwait" + pipe->label, "Metal renderer: waited %.0f ms for %s's pipeline (%ux%u target, PG_PIPE_WAIT_SMALL)", nowMs() - start, pipe->label.c_str(), R->passInfo.width, R->passInfo.height);
+	}
+	if (!pipe->ready.load(std::memory_order_acquire)) {
+		drawOutcome = "SKIP-pending"; R->pendingSkips++; R->skipped++; R->pipeDirty = true;
+		if (gUninitTrace > 0)		// GTA-77 (PG_MR_UNINIT=1): the first skip of each program while its pipeline compiles
+			logOnce("pend" + pipe->label, "Metal renderer [startup]: %s skipped while its pipeline compiles (frame %llu, target %ux%u, format %lu)",
+			        pipe->label.c_str(), (unsigned long long)R->frame, R->passInfo.width, R->passInfo.height, (unsigned long)(R->passInfo.colorCount ? R->passInfo.colors[0] : R->passInfo.depth));
+		return;
+	}
 	if (!pipe->state) { drawOutcome = "SKIP-pipefail"; R->skipped++; R->skipReasons[3]++; return; }
 	if (R->activeOcclusion) {
 		R->activeOcclusion->draws++;
@@ -1865,6 +2269,39 @@ static void drawInner(const uint32_t *p) {
 			     R->passInfo.samples, R->passInfo.colorCount, w ? w[0] : 0, w ? w[1] : 0, w ? w[2] : 0, w ? w[3] : 0, w ? w[5 + 3] : 0, R->dssRef, w ? w[4] : 0);
 		}
 	}
+	// Test (GTA-77, every platform): PG_TEST_SKIP_PROGRAM=<part of a program name>:<frames> skips those draws until that
+	// frame, as a pipeline still compiling on a cold shader cache does (e.g. waterTex::PS_WaterUpdate:1500).
+	{
+		static std::string skipName; static uint64_t skipUntil = 0; static bool parsed = false;
+		if (!parsed) { parsed = true; if (const char *v = getenv("PG_TEST_SKIP_PROGRAM")) { std::string s = v; size_t c = s.rfind(':'); if (c != std::string::npos) { skipName = s.substr(0, c); skipUntil = strtoull(s.c_str() + c + 1, nullptr, 10); } } }
+		if (!skipName.empty() && R->frame < skipUntil && pipe->label.find(skipName) != std::string::npos) {
+			logOnce("testskip", "Metal renderer [test]: %s skipped until frame %llu (PG_TEST_SKIP_PROGRAM)", pipe->label.c_str(), (unsigned long long)skipUntil);
+			drawOutcome = "SKIP-test"; R->skipped++; return;
+		}
+	}
+#if MR_TRACE
+	// Test (simulator, GTA-77): PG_TEST_WATER_NAN=x0,y0,w,h fills that region of the water height map the near water's
+	// vertex shader reads (water::VS_WaterTess, vertex texture 0, R32F 256x256) with NaN before its first draw each
+	// frame, to see what a broken water simulation looks like.
+	static const char *waterNan = getenv("PG_TEST_WATER_NAN");
+	static uint64_t waterNanFrame = UINT64_MAX;
+	if (waterNan && waterNanFrame != R->frame && pipe->label.find("VS_WaterTess") != std::string::npos) {
+		View *v = view(R->srv[0][0], OSrv);
+		Texture *ht = v && !v->isBuf ? texture(v->res) : nullptr;
+		unsigned x0 = 0, y0 = 0, w = 64, h = 64;
+		sscanf(waterNan, "%u,%u,%u,%u", &x0, &y0, &w, &h);
+		if (ht && ht->tex && ht->format == MTLPixelFormatR32Float && x0 + w <= ht->width && y0 + h <= ht->height) {
+			waterNanFrame = R->frame;
+			Alloc a = frameAlloc((size_t)w * h * 4, 16);
+			for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)a.ptr)[i] = 0x7fc00000u;
+			[blitEncoder() copyFromBuffer:a.buf sourceOffset:a.off sourceBytesPerRow:w * 4 sourceBytesPerImage:w * h * 4 sourceSize:MTLSizeMake(w, h, 1)
+			                    toTexture:ht->tex destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x0, y0, 0)];
+			logOnce("waternan", "Metal renderer [test]: water height map %u (%ux%u) gets NaN at %u,%u %ux%u every frame", ht->oid, ht->width, ht->height, x0, y0, w, h);
+			if (!ensurePass()) return;
+			R->appliedPipe = nil; R->pipeDirty = true;
+		}
+	}
+#endif
 	if (pipe->state != R->appliedPipe) { [R->pass setRenderPipelineState:pipe->state]; R->appliedPipe = pipe->state; }
 	applyDynamicState();
 	fixPedSpikes(vs, lay, p);
@@ -1890,10 +2327,20 @@ static void drawInner(const uint32_t *p) {
 		b->lastUse = R->serial;
 	}
 	MTLPrimitiveType type = primitiveType(R->topo);
+	// GTA-77 statistics: strip draws, and draws into packed float targets (RG11B10, RGB9E5)
+	const bool strip = R->topo == 5;
+	if (strip) { gFix.stripDraws++; if (kind >= 4) gFix.stripIndirect++; else { if (indexed) gFix.stripIndexed++; if (inst > 1) gFix.stripInstanced++; } }
+	if (R->passInfo.packedMask && ps) gFix.packedDraws++;
+	if (gDrawStats > 0 && (strip || (R->passInfo.packedMask && ps))) {
+		LabelStat &ls = gLabelStats[pipe->label];
+		if (strip) { ls.strips++; if (indexed) ls.stripIndexed++; ls.stripVerts += kind >= 4 ? 0 : count; if (inst > 1) ls.stripInst++; }
+		if (R->passInfo.packedMask && ps) ls.packed++;
+	}
 	if (kind >= 4) {
 		Buffer *args = buffer(p[1]);
 		if (!args || !args->buf) { R->skipped++; return; }
 		args->lastUse = R->serial;
+		if (strip) gFix.keptStrips++;		// indirect: the GPU holds the counts, so it stays a strip
 		if (kind == 4) {
 			Buffer *ib = buffer(R->ib.buf);
 			if (!ib || !ib->buf) { R->skipped++; return; }
@@ -1927,6 +2374,14 @@ static void drawInner(const uint32_t *p) {
 		if (!dCount || !dInst) { drawOutcome = "SKIP-clamp"; R->skipped++; R->skipReasons[4]++; return; }
 	}
 	if (!dCount || !dInst) return;
+	if (strip && gStripLists.load(std::memory_order_relaxed)) {
+		if (drawStripAsList(indexed, ib, isz, start, dCount, dInst, baseVertex, foldV, vFirst, iFirst, lay)) {
+			gFix.asList++; drawOutcome = "ok-list";
+			R->draws++; R->drawsInCmd++;
+			return;
+		}
+		gFix.keptStrips++;
+	} else if (strip) gFix.keptStrips++;
 	if (indexed)
 		[R->pass drawIndexedPrimitives:type indexCount:dCount indexType:isz == 2 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32 indexBuffer:ib->buf
 		          indexBufferOffset:ib->base + R->ib.offset + (NSUInteger)start * isz instanceCount:dInst baseVertex:foldV ? 0 : baseVertex baseInstance:iFirst];
@@ -1958,6 +2413,15 @@ static void dispatch(uint32_t x, uint32_t y, uint32_t z) {
 	[R->compute setComputePipelineState:cp.state];
 	for (size_t i = 0; i < info->wgMem.size(); i++) [R->compute setThreadgroupMemoryLength:(info->wgMem[i] + 15) & ~15u atIndex:i];
 	bindStage(2, info);
+	for (const ResBinding &b : info->res) if (b.kind == RStorageTex) {		// GTA-77 statistics: compute writes into packed float textures
+		View *u = view(R->uav[2][(b.binding - 160) & 7], OUav);
+		Texture *t = u && !u->isBuf ? texture(u->res) : nullptr;
+		if (t && t->tex && packedFloat(t->format)) {
+			gFix.packedDispatches++;
+			if (gDrawStats > 0) gLabelStats["compute " + info->label].packed++;
+			break;
+		}
+	}
 	[R->compute dispatchThreadgroups:MTLSizeMake(x, y, z) threadsPerThreadgroup:MTLSizeMake(info->wg[0], info->wg[1], info->wg[2])];
 }
 
@@ -2015,6 +2479,14 @@ static void copyRegion(const uint32_t *p) {
 		uint32_t sOff = hasBox ? l : 0, size = hasBox ? r - l : std::min(s->size, d->size);
 		size = std::min(size, std::min(s->bytes - std::min(s->bytes, sOff), d->bytes - std::min(d->bytes, dx))) & ~3u;
 		if (!size) return;
+		// The GPU is about to change a mesh's Metal bytes: engine pages handed back with them go back first, with the bytes
+		// they had (GTA-217: otherwise a later put-back would give the engine the copied bytes; seen once in a
+		// simulator benchmark with PG_MESH_VERIFY=1, 1 page in 58,822).
+		if (d->meshPages) {
+			static uint64_t gpuCopies; gpuCopies++;
+			if (!(gpuCopies & (gpuCopies - 1))) logf("Metal renderer: a GPU copy into a mesh with engine pages handed back (%llu so far); they go back first", (unsigned long long)gpuCopies);
+			PGMeshForgetMesh(d->oid, d->meshPage, d->meshPages, 0); d->meshPages = 0;
+		}
 		[blitEncoder() copyFromBuffer:s->buf sourceOffset:s->base + sOff toBuffer:d->buf destinationOffset:d->base + dx size:size];
 		s->lastUse = d->lastUse = R->serial;
 		return;
@@ -2022,12 +2494,16 @@ static void copyRegion(const uint32_t *p) {
 	if (so->kind != OTexture || dobj->kind != OTexture) return;
 	Texture *s = (Texture *)so, *d = (Texture *)dobj;
 	if (!s->tex || !d->tex) return;
+	etcSettle(s); etcSettle(d);
+	if (s->bcKind && d->bcKind && s->format != d->format && (s->etc || d->etc)) gTextureStats.etcMismatch++;
 	uint32_t sMip = srcSub % s->mips, sLayer = srcSub / s->mips, dMip = dstSub % d->mips, dLayer = dstSub / d->mips;
 	uint32_t mw, mh, md; mipExtent(s, sMip, mw, mh, md);
 	uint32_t w = hasBox ? r - l : mw, h = hasBox ? b - t : mh, dep = hasBox ? bk - f : md;
 	uint32_t sx = hasBox ? l : 0, sy = hasBox ? t : 0, sz = hasBox ? f : 0;
 	if (s->bcKind && d->bcKind && !s->compressedShadow.empty()) {
 		gTextureStats.bcCopies++;
+		logOnce("bccopyinfo" + std::to_string(s->width) + "x" + std::to_string(s->height) + "-" + std::to_string(s->dxgi) + "-" + std::to_string(d->bind), "Metal renderer: BC copy region from a %ux%u texture (DXGI %u, bind %#x, %u levels) to bind %#x %ux%u",
+		        s->width, s->height, s->dxgi, s->bind, s->mips, d->bind, d->width, d->height);
 		uint32_t dw, dh, dd; mipExtent(d, dMip, dw, dh, dd);
 		uint32_t bb = bcBlockBytes(s->bcKind), sp = (mw + 3) / 4 * bb, dp = (dw + 3) / 4 * bb, rows = (h + 3) / 4, bytes = (w + 3) / 4 * bb;
 		for (uint32_t zz = 0; zz < (s->dim == 3 ? dep : 1); zz++) {
@@ -2066,13 +2542,13 @@ static void copyRegion(const uint32_t *p) {
 		[blitEncoder() copyFromTexture:s->tex sourceSlice:three ? 0 : sLayer sourceLevel:sLevel sourceOrigin:MTLOriginMake(sx, sy, three ? sz : 0)
 		                    sourceSize:MTLSizeMake(w, h, three ? std::max(1u, dep) : 1) toTexture:target destinationSlice:d->dim == 3 ? 0 : dLayer
 		              destinationLevel:dLevel destinationOrigin:MTLOriginMake(dx, dy, d->dim == 3 ? dz : 0)];
-	} else if (s->astc && d->astc) {		// sRGB and linear ASTC twins: through a view, as for BC above
+	} else if ((s->astc && d->astc) || (s->etc && d->etc)) {		// sRGB and linear ASTC (or ETC2) twins: through a view, as for BC above
 		id<MTLTexture> target = [d->tex newTextureViewWithPixelFormat:s->format];
 		if (!target) { logOnce("copyastcview", "Metal renderer: copy between ASTC formats not supported"); return; }
 		[blitEncoder() copyFromTexture:s->tex sourceSlice:three ? 0 : sLayer sourceLevel:sLevel sourceOrigin:MTLOriginMake(sx, sy, three ? sz : 0)
 		                    sourceSize:MTLSizeMake(w, h, three ? std::max(1u, dep) : 1) toTexture:target destinationSlice:d->dim == 3 ? 0 : dLayer
 		              destinationLevel:dLevel destinationOrigin:MTLOriginMake(dx, dy, d->dim == 3 ? dz : 0)];
-	} else if (!s->bcNative && !d->bcNative && !s->astc && !d->astc && bytesPerTexel(s->format) == bytesPerTexel(d->format) && !s->isDepth && !d->isDepth && s->samples == 1 && d->samples == 1) {
+	} else if (!s->bcNative && !d->bcNative && !s->astc && !d->astc && !s->etc && !d->etc && bytesPerTexel(s->format) == bytesPerTexel(d->format) && !s->isDepth && !d->isDepth && s->samples == 1 && d->samples == 1) {
 		uint32_t bpp = bytesPerTexel(s->format), bpr = w * bpp;
 		// Different formats of one size are copied as raw bytes; if their channel layouts differ
 		// the colours come out wrong (suspected for short-lived magenta terrain patches).
@@ -2091,7 +2567,7 @@ static void copyRegion(const uint32_t *p) {
 		return;
 	}
 	s->lastUse = d->lastUse = R->serial;
-	d->proxyDirty = true;
+	d->proxyDirty = true; d->written = true;
 }
 static void copyResource(uint32_t dstId, uint32_t srcId) {
 	Object *so = R->objs.get(srcId), *dobj = R->objs.get(dstId);
@@ -2100,8 +2576,12 @@ static void copyResource(uint32_t dstId, uint32_t srcId) {
 	if (so->kind != OTexture || dobj->kind != OTexture) return;
 	Texture *s = (Texture *)so, *d = (Texture *)dobj;
 	if (!s->tex || !d->tex) return;
+	etcSettle(s); etcSettle(d);
+	if (s->bcKind && d->bcKind && s->format != d->format && (s->etc || d->etc)) gTextureStats.etcMismatch++;
 	if (s->bcKind && d->bcKind && !s->compressedShadow.empty()) {
 		gTextureStats.bcCopies++;
+		logOnce("bccopyresinfo" + std::to_string(s->width) + "x" + std::to_string(s->height) + "-" + std::to_string(s->dxgi) + "-" + std::to_string(d->bind), "Metal renderer: BC copy from a %ux%u texture (DXGI %u, bind %#x, %u levels) to bind %#x",
+		        s->width, s->height, s->dxgi, s->bind, s->mips, d->bind);
 		for (auto &it : d->compressedShadow) gTextureStats.shadowBytes -= (int64_t)it.second.size();
 		d->compressedShadow = s->compressedShadow;
 		for (auto &it : d->compressedShadow) gTextureStats.shadowBytes += (int64_t)it.second.size();
@@ -2117,7 +2597,7 @@ static void copyResource(uint32_t dstId, uint32_t srcId) {
 		         toTexture:d->tex destinationSlice:sl destinationLevel:m - d->skip destinationOrigin:MTLOriginMake(0, 0, 0)];
 	}
 	s->lastUse = d->lastUse = R->serial;
-	d->proxyDirty = true;
+	d->proxyDirty = true; d->written = true;
 }
 static void resolve(const uint32_t *p) {
 	Texture *d = texture(p[0]), *s = texture(p[2]);
@@ -2129,13 +2609,14 @@ static void resolve(const uint32_t *p) {
 	rp.colorAttachments[0].loadAction = MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
 	[[commandBuffer() renderCommandEncoderWithDescriptor:rp] endEncoding];
 	s->lastUse = d->lastUse = R->serial;
-	d->proxyDirty = true;
+	d->proxyDirty = true; d->written = true;
 }
 static void generateMips(uint32_t srvId) {
 	View *v = view(srvId, OSrv);
 	Texture *t = v ? texture(v->res) : nullptr;
 	if (!t || !t->tex || t->mips < 2 || t->isDepth || t->samples > 1) return;
 	[blitEncoder() generateMipmapsForTexture:t->tex];
+	t->written = true;
 	t->lastUse = R->serial;
 }
 
@@ -2194,7 +2675,7 @@ static void clearUav(const uint32_t *p) {
 		[[commandBuffer() renderCommandEncoderWithDescriptor:rp] endEncoding];
 	}
 	t->lastUse = R->serial;
-	t->proxyDirty = true;
+	t->proxyDirty = true; t->written = true;
 }
 
 // ---- readbacks --------------------------------------------------------------------------------------------------------
@@ -2220,6 +2701,7 @@ static void readback(const uint32_t *p) {
 	}
 	if (o->kind != OTexture) { done(); return; }
 	Texture *s = (Texture *)o;
+	etcSettle(s);
 	uint32_t mip = sub % s->mips, layer = sub / s->mips;
 	if (mip < s->skip && !(s->bcKind && !s->bcNative)) {		// Lite: the GPU doesn't hold that level
 		gTextureStats.missingLevel++;
@@ -2254,6 +2736,9 @@ static void readback(const uint32_t *p) {
 	}
 	if (s->bcKind) {		// the original blocks (the GPU holds a decoded copy)
 		gTextureStats.bcReadbacks++;
+		// Which BC textures the game reads back (GTA-217: the CPU block copies cost 60-70 MB for a handful of readbacks).
+		logOnce("rbinfo" + std::to_string(s->width) + "x" + std::to_string(s->height) + "-" + std::to_string(s->dxgi), "Metal renderer: BC readback of a %ux%u texture (DXGI %u, bind %#x, %u levels, mip %u, %s)",
+		        s->width, s->height, s->dxgi, s->bind, s->mips, mip, s->compressedShadow.empty() ? "no CPU copy" : "from its CPU copy");
 		uint32_t bb = bcBlockBytes(s->bcKind), rows = (h + 3) / 4, pitch = (mw + 3) / 4 * bb, rowBytes = (w + 3) / 4 * bb;
 		for (uint32_t z = 0; z < (three ? d : 1); z++) {
 			auto it = s->compressedShadow.find(((uint64_t)mip << 32) | (three ? z0 + z : layer));
@@ -2278,11 +2763,29 @@ static void readback(const uint32_t *p) {
 	uint8_t *src = a.ptr;
 	uint64_t memSize = R->memSize;
 	uint8_t *mem = R->mem;
+	// GTA-77 (PG_MR_UNINIT=1): NaN or infinity in what the game reads back from a 32-bit float target (the water
+	// simulation's height and velocity maps are read back every frame), logged at most every 10 s per texture.
+	const bool scan = gUninitTrace > 0 && isFloat32(s->format);
+	const uint32_t oid = s->oid, tw = s->width, th = s->height;
 	R->onComplete.push_back([=]() {
 		for (uint32_t z = 0; z < layers; z++) for (uint32_t row = 0; row < h; row++) {
 			uint64_t to = addr + (uint64_t)z * slicePitch + (uint64_t)row * rowPitch;
 			if (to + rowBytes > memSize) break;
 			memcpy(mem + to, src + ((size_t)z * h + row) * bpr, rowBytes);
+		}
+		if (scan) {
+			uint64_t nan = 0, inf = 0, n = 0;
+			for (uint32_t z = 0; z < layers; z++) for (uint32_t row = 0; row < h; row++) {
+				const uint32_t *wv = (const uint32_t *)(src + ((size_t)z * h + row) * bpr);
+				for (uint32_t i = 0; i < rowBytes / 4; i++, n++) { uint32_t m = wv[i] & 0x7fffffffu; if (m > 0x7f800000u) nan++; else if (m == 0x7f800000u) inf++; }
+			}
+			static std::mutex lock; static std::unordered_map<uint32_t, double> last;
+			if (nan || inf) {
+				std::lock_guard<std::mutex> g(lock);
+				double now = CACurrentMediaTime();
+				if (now - last[oid] > 10) { last[oid] = now; logf("Metal renderer [nan]: readback of texture %u (%ux%u, 32-bit float) holds %llu NaN and %llu infinite values of %llu", oid, tw, th,
+				                                                  (unsigned long long)nan, (unsigned long long)inf, (unsigned long long)n); }
+			}
 		}
 		done();
 	});
@@ -2296,8 +2799,12 @@ static void savePNG(id<MTLBuffer> buf, uint32_t w, uint32_t h, uint32_t bpr, std
 	CGImageRef image = CGBitmapContextCreateImage(bitmap);
 	NSData *png = UIImagePNGRepresentation([UIImage imageWithCGImage:image]);
 	NSString *folder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"NativeFrames"];
+	NSString *full = [NSString stringWithUTF8String:name.c_str()];
+	// "folder/name": one subfolder of NativeFrames (GTA-77 test shots keep each session's pictures together)
+	NSString *sub = full.stringByDeletingLastPathComponent.lastPathComponent;
+	if (sub.length && ![sub isEqualToString:@".."] && ![sub isEqualToString:@"."]) folder = [folder stringByAppendingPathComponent:sub];
 	[NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
-	NSString *file = [[folder stringByAppendingPathComponent:[NSString stringWithUTF8String:name.c_str()].lastPathComponent] stringByAppendingPathExtension:@"png"];
+	NSString *file = [[folder stringByAppendingPathComponent:full.lastPathComponent] stringByAppendingPathExtension:@"png"];
 	[png writeToFile:file atomically:YES];
 	CGImageRelease(image); CGContextRelease(bitmap); CGColorSpaceRelease(color);
 	logf("Native rendered frame saved: %s", name.c_str());
@@ -2365,12 +2872,54 @@ static id<MTLTexture> upscaled(Texture *) {
 }
 #endif
 
+// GTA-77 test shots (PG_TEST_SHOTS in EngineHost.c): pictures, each with its own switch settings. The settings change
+// right after a frame is presented; the picture is the third frame after that, drawn wholly with them. When the queue
+// is empty the settings go back to the launch's.
+struct TestShot { std::string name; int strips, nan; };
+static std::mutex gShotLock;
+static std::vector<TestShot> gShots;
+static int gShotFrames = -1;		// -1: the first shot's settings are not applied yet
+static void writeCensus(const std::string &name) {
+	NSString *folder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"NativeFrames"];
+	NSString *full = [NSString stringWithUTF8String:name.c_str()];
+	NSString *sub = full.stringByDeletingLastPathComponent.lastPathComponent;
+	if (sub.length && ![sub isEqualToString:@".."] && ![sub isEqualToString:@"."]) folder = [folder stringByAppendingPathComponent:sub];
+	[NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+	FILE *f = fopen([[[folder stringByAppendingPathComponent:full.lastPathComponent] stringByAppendingPathExtension:@"txt"] fileSystemRepresentation], "w");
+	if (!f) return;
+	uint64_t draws = 0, skipped = 0;
+	for (auto &kv : gCensus) { draws += kv.second.draws; skipped += kv.second.skipped; }
+	fprintf(f, "frame %llu: %llu draws, %llu skipped; pipelines %u made, %u compiling\n", (unsigned long long)R->frame, (unsigned long long)draws,
+	        (unsigned long long)skipped, R->pipesMade, R->pipesPending.load());
+	for (auto &kv : gCensus) fprintf(f, "%6llu draws %9llu vertices %4llu skipped %-14s %s\n", (unsigned long long)kv.second.draws, (unsigned long long)kv.second.verts,
+	                                 (unsigned long long)kv.second.skipped, kv.second.reasons.c_str(), kv.first.c_str());
+	fclose(f);
+}
+static std::string testShotAtPresent() {
+	std::lock_guard<std::mutex> g(gShotLock);
+	gCensusOn.store(!gShots.empty(), std::memory_order_relaxed);
+	if (gShots.empty()) { gCensus.clear(); return ""; }
+	TestShot &s = gShots.front();
+	if (gShotFrames < 0) { gStripLists.store(s.strips); gNanClamp.store(s.nan); gShotFrames = 3; gCensus.clear(); return ""; }
+	if (--gShotFrames > 0) { gCensus.clear(); return ""; }
+	std::string name = s.name;
+	writeCensus(name);
+	gCensus.clear();
+	logf("Metal renderer: test shot %s (strips as lists %d, NaN clamp %d)", name.c_str(), s.strips, s.nan);
+	gShots.erase(gShots.begin()); gShotFrames = -1;
+	if (gShots.empty()) { gStripLists.store(gLaunchStripLists); gNanClamp.store(gLaunchNanClamp); }
+	return name;
+}
+
 static void present(uint32_t texId) {
 	flushBlockUploads();
 	flushClears();
 	endEncoders();
+	stripEvict();
 	Texture *t = texture(texId);
 	id<CAMetalDrawable> drawable = nil;
+	const std::string shot = testShotAtPresent();
+	if (t && t->tex && !shot.empty()) capture(t, shot);
 	if (t && t->tex && R->layer) {
 		std::string name;
 		{ std::lock_guard<std::mutex> g(R->captureLock); name.swap(R->captureName); }
@@ -2382,7 +2931,7 @@ static void present(uint32_t texId) {
 		}
 		id<MTLTexture> picture = upscaled(t) ?: t->tex;
 		CGSize size = CGSizeMake(picture.width, picture.height);
-		if (!CGSizeEqualToSize(R->layer.drawableSize, size)) R->layer.drawableSize = size;
+		if (!CGSizeEqualToSize(R->layer.drawableSize, size)) { R->layer.drawableSize = size; gDrawablePixels = (uint64_t)picture.width * picture.height; }
 		drawable = [R->layer nextDrawable];
 		if (drawable) {
 			MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -2417,6 +2966,7 @@ static void present(uint32_t texId) {
 	commit(CPresent, drawable);
 	f.lastSerial = R->serial - 1;
 	R->presents++;
+	presentedFrames.fetch_add(1, std::memory_order_relaxed);
 	double now = CACurrentMediaTime();
 	if (R->statPresentAt) { double gap = (now - R->statPresentAt) * 1000; if (gap > 50) R->longFrames++; if (gap > R->worstFrameMs) R->worstFrameMs = gap; }
 	R->statPresentAt = now;
@@ -2523,7 +3073,7 @@ static void destroyObject(uint32_t oid) {
 	if (o->kind == OQuery) for (auto &pq : R->pendingQueries) if (pq.q == o) pq.q = nullptr;
 	if (o->kind == OShader) { Shader *s = (Shader *)o; auto it = s->info ? R->shaderObjects.find(s->info) : R->shaderObjects.end(); if (it != R->shaderObjects.end() && it->second == oid) R->shaderObjects.erase(it); }
 	if (o->kind == OBuffer || o->kind == OLayout || o->kind == OState || o->kind == OShader) R->pipeDirty = true;
-	if (o->kind == OBuffer) gMeshWrites.erase(oid);
+	if (o->kind == OBuffer) { gMeshWrites.erase(oid); if (!gStripCacheKeys.empty() || !gStripDynamic.empty()) stripForgetBuffer(oid); }
 	if (gTraceHeld > 0) gHeld.erase(oid);
 	R->objs.erase(oid);
 }
@@ -2679,6 +3229,35 @@ static void execute(uint32_t op, const uint32_t *p, uint32_t n) {
 	}
 }
 
+// What the renderer holds, for the memory breakdown (GTA-217, NativeMemoryBreakdown.c). Any thread: atomics only.
+extern "C" void PGRendererMemoryReport(PGRendererMemoryNumbers *out) {
+	memset(out, 0, sizeof *out);
+	auto pos = [](int64_t v) { return v > 0 ? (uint64_t)v : 0; };
+	out->deviceAllocated = gReportDevice ? (uint64_t)gReportDevice.currentAllocatedSize : 0;
+	for (int k = 0; k < PGTexKinds; k++) { out->textureBytes[k] = pos(gTexKindBytes[k].load()); out->textureCount[k] = pos(gTexKindCount[k].load()); }
+	out->bcGameBytes = pos(gTextureStats.bcGameBytes.load());
+	for (uint32_t f = 0; f < 1024; f++) {
+		uint64_t v = pos(gFormatBytes[f].load());
+		for (int i = 0; i < 8; i++) if (v > out->topFormatBytes[i]) {
+			for (int j = 7; j > i; j--) { out->topFormat[j] = out->topFormat[j - 1]; out->topFormatBytes[j] = out->topFormatBytes[j - 1]; }
+			out->topFormat[i] = f; out->topFormatBytes[i] = v; break;
+		}
+	}
+	out->slabBytes = pos(gSlabTotal.load()); out->slabUsedBytes = pos(gBufferStats.inSlab.load());
+	out->meshBytes = pos(gBufferStats.meshBytes.load()); out->meshCount = pos(gBufferStats.meshCount.load());
+	out->ownMeshBytes = out->meshBytes > out->slabUsedBytes ? out->meshBytes - out->slabUsedBytes : 0;
+	uint64_t all = pos(gBufferStats.bytes.load()); out->otherBufferBytes = all > out->meshBytes ? all - out->meshBytes : 0;
+	out->frameRingBytes = pos(gFrameRingBytes.load()); out->constantCopyBytes = pos(gBufferStats.cbBytes.load()); out->blockCopyBytes = pos(gTextureStats.shadowBytes.load());
+	if (PGMeshReleaseOn()) {
+		uint64_t released, byFault, byForget, byTouch, mismatched, page, orphanedPages, orphanWritten, orphanRead;
+		PGMeshReleaseStats(&released, &byFault, &byForget, &byTouch, &mismatched, &page, &orphanedPages, &orphanWritten, &orphanRead);
+		uint64_t back = byFault + byForget + byTouch + orphanWritten + orphanRead;
+		out->meshReleasedBytes = released > back ? (released - back) * page : 0;
+	}
+	out->drawableBytes = gDrawablePixels.load() * 4 * 3;		// BGRA8, maximumDrawableCount 3
+	out->pipelines = gPipelinesMade.load();
+}
+
 static void report() {
 	double now = nowMs();
 	if (!R->statT) { R->statT = now; R->statDraws = R->draws; R->statPresents = R->presents; R->statSkips = R->skipped; R->statPending = R->pendingSkips; R->statCommits = R->commits; return; }
@@ -2691,6 +3270,15 @@ static void report() {
 		logf("[metal] mesh release: %.0f MB of engine memory handed back now; pages released %llu, put back when the game read them %llu, before a file read %llu, when their buffer went away %llu; kept because they changed %llu; left empty with their buffer %llu (written again %llu, read again %llu)",
 		     (double)(released - byFault - byForget - byTouch - orphanWritten - orphanRead) * page / 1048576.0, (unsigned long long)released, (unsigned long long)byFault, (unsigned long long)byTouch,
 		     (unsigned long long)byForget, (unsigned long long)mismatched, (unsigned long long)orphanedPages, (unsigned long long)orphanWritten, (unsigned long long)orphanRead);
+		uint64_t shared = 0, kept = 0, held = 0; PGMeshShareStats(&shared, &kept, &held);
+		if (shared) logf("[metal] mesh release, pages shared by several meshes (GTA-217): %llu released, %.1f MB of other bytes kept with them; %llu not handed back again (put back moments before); %llu put back without the remap", (unsigned long long)shared, kept / 1048576.0, (unsigned long long)held, (unsigned long long)PGMeshRemapFallbacks());
+		{ uint64_t waits = 0, waitMaxUs = 0, slow = 0, late = 0; PGMeshFaultWaitStats(&waits, &waitMaxUs, &slow, &late);
+		  if (shared || waits || slow) logf("[metal] mesh release, writes while a page is made writable again (GTA-245): %llu waited, longest %.1f ms; %llu kept faulting past 1,000 tries; %llu pages made writable again right after the read-only step", (unsigned long long)waits, waitMaxUs / 1000.0, (unsigned long long)slow, (unsigned long long)late); }
+		{ int64_t dead = 0; uint64_t freedPieces = 0, reusable = 0; PGMeshDeadStats(&dead, &freedPieces, &reusable);
+		  if (shared) logf("[metal] mesh release, destroyed meshes: %.1f MB of their bytes kept in page records (malloc), %llu pieces dropped once the engine freed them; %llu freed (reusable) pages left alone", dead / 1048576.0, (unsigned long long)freedPieces, (unsigned long long)reusable); }
+		uint64_t checked = 0, bad = 0, badPage = 0, badOffset = 0; PGMeshVerifyStats(&checked, &bad, &badPage, &badOffset);
+		if (checked) logf("[metal] mesh release check: %llu pages put back compared with their copy, %llu different%s", (unsigned long long)checked, (unsigned long long)bad,
+		                  bad ? [NSString stringWithFormat:@" (first: engine page %llu, byte %llu; %s)", (unsigned long long)badPage, (unsigned long long)badOffset, PGMeshVerifyDetail()].UTF8String : "");
 	}
 	double frames = (double)(R->presents - R->statPresents);
 	logf("[metal] fps: %.1f (%.0f frames, %.0f draws/frame, %.1f command buffers/frame), skipped +%llu (waiting for pipelines +%llu), clamped %llu, pipelines %u (%u compiling), renderer busy %.1f ms/frame",
@@ -2704,6 +3292,33 @@ static void report() {
 	for (int i = 0; i < 5; i++) if (R->skipReasons[i]) { char b[64]; snprintf(b, sizeof b, "%s%s %llu", skips.empty() ? "" : ", ", skipNames[i], (unsigned long long)R->skipReasons[i]); skips += b; }
 	logf("[metal] command buffers per frame: %s; skipped draws: %s", reasons.c_str(), skips.empty() ? "none" : skips.c_str());
 	logf("[metal] stutter: %llu frames over 50 ms, longest %.0f ms", (unsigned long long)R->longFrames, R->worstFrameMs);
+	{		// GTA-77: strip draws and their lists, and draws into packed float targets
+		const double fr = std::max(1.0, frames);
+		logf("[metal] strips (GTA-77): %.1f draws/frame (%.1f indexed, %.1f instanced, %.1f indirect), %.1f/frame as lists, %.1f/frame as strips; "
+		     "%llu triangles became %llu (%llu repeating an index left out, %llu strip restarts); converted %llu (%llu per draw) in %.2f ms (%.3f ms/frame), "
+		     "%llu from the cache, %zu lists cached in %.0f KB, %zu index buffers per draw",
+		     gFix.stripDraws / fr, gFix.stripIndexed / fr, gFix.stripInstanced / fr, gFix.stripIndirect / fr, gFix.asList / fr, gFix.keptStrips / fr,
+		     (unsigned long long)gFix.stripTris, (unsigned long long)gFix.listTris, (unsigned long long)gFix.degenerate, (unsigned long long)gFix.restarts,
+		     (unsigned long long)gFix.converts, (unsigned long long)gFix.dynamicConverts, gFix.convertMs, gFix.convertMs / fr, (unsigned long long)gFix.hits,
+		     gStripCache.size(), gStripCacheBytes / 1024.0, gStripDynamic.size());
+		logf("[metal] packed float targets (GTA-77): %.1f of %.1f passes/frame draw into RG11B10/RGB9E5 (%.1f draws/frame, %.1f compute writes/frame); "
+		     "NaN/infinity clamp %s, %.1f passes/frame cleaned; strips as lists %s",
+		     gFix.packedPasses / fr, gFix.passes / fr, gFix.packedDraws / fr, gFix.packedDispatches / fr,
+		     gNanClamp.load() == 2 ? "on (every float target)" : gNanClamp.load() == 3 ? "on (with small float targets)" : gNanClamp.load() ? "on" : "off", gFix.cleanedPasses / fr, gStripLists.load() ? "on" : "off");
+		gFix = FixStats();
+		if (gDrawStats > 0) {
+			std::vector<std::pair<std::string, LabelStat>> list(gLabelStats.begin(), gLabelStats.end());
+			std::sort(list.begin(), list.end(), [](auto &a, auto &b) { return a.second.strips + a.second.packed > b.second.strips + b.second.packed; });
+			for (size_t i = 0; i < list.size() && i < 40; i++) {
+				const LabelStat &s = list[i].second;
+				logf("[metal] draw stats (GTA-77): %s: strips %llu (indexed %llu, instanced %llu, %.0f vertices each), packed float target draws %llu",
+				     list[i].first.c_str(), (unsigned long long)s.strips, (unsigned long long)s.stripIndexed, (unsigned long long)s.stripInst,
+				     s.strips ? (double)s.stripVerts / s.strips : 0.0, (unsigned long long)s.packed);
+			}
+			for (auto &kv : gPackedTargets) logf("[metal] draw stats (GTA-77): packed float target %s: %llu passes", kv.first.c_str(), (unsigned long long)kv.second);
+			gLabelStats.clear(); gPackedTargets.clear();
+		}
+	}
 	R->longFrames = 0; R->worstFrameMs = 0;
 	const double MB = 1048576.0;
 	logf("[metal] textures: GPU %.0f MB (BC: game counts %.0f MB, GPU holds %.0f MB), CPU block copies %.0f MB; BC readbacks %llu, BC copies %llu; create failures %llu, decode failures %llu",
@@ -2722,6 +3337,9 @@ static void report() {
 	uint64_t convertMicros = gTextureStats.convertMicros.exchange(0), converts = gTextureStats.converts.exchange(0);
 	if (converts && convertSpan > 0) logf("[metal] texture conversion on the CPU: %.0f ms for %llu uploads in the last %.0f s (%.3f cores)",
 	                                    convertMicros / 1000.0, (unsigned long long)converts, convertSpan / 1000, convertMicros / 1000.0 / convertSpan);
+	if (gETCBC) logf("[metal] BC as ETC2/EAC: %.0f ms of the conversion in the last %.0f s; BC1 with transparent texels made ASTC %llu, transparent texels shown opaque %llu, copies between ETC2 and ASTC %llu; %.1f MB of BC1 waiting for first use",
+	                 gTextureStats.etcMicros.exchange(0) / 1000.0, convertSpan / 1000, (unsigned long long)gTextureStats.etcToASTC.load(), (unsigned long long)gTextureStats.etcAlphaLost.load(), (unsigned long long)gTextureStats.etcMismatch.load(),
+	                 gTextureStats.etcPendingBytes.load() / 1048576.0);
 	uint64_t ring = 0, ringBig = 0;
 	for (auto &f : R->frames) { ring += f.chunks.size() * FrameRing::CHUNK; for (id<MTLBuffer> b : f.big) ringBig += b.length; }
 	{
@@ -2826,7 +3444,7 @@ static bool setup() {
 	R->layer.maximumDrawableCount = 3;
 	R->queue = [R->device newCommandQueueWithMaxCommandBufferCount:64];
 	R->completion = dispatch_semaphore_create(0);
-	R->float32Filtering = R->device.supports32BitFloatFiltering;
+	R->float32Filtering = (R->device.supports32BitFloatFiltering && !getenv("PG_NO_FLOAT32_FILTER")) || getenv("PG_FORCE_FLOAT32_FILTER");		// tests (GTA-77 striping)
 	// PG_FORCE_BC_DECODE=1 keeps the CPU decode path on BC-capable GPUs (simulator checks of the iPhone path).
 	gNativeBC = false;
 	if (@available(iOS 16.4, *)) gNativeBC = R->device.supportsBCTextureCompression && !getenv("PG_FORCE_BC_DECODE"); // iOS 16.0-16.3: decoded
@@ -2837,6 +3455,12 @@ static bool setup() {
 	// PG_NO_ASTC_BC1=1 keeps the decoded BC1 path (A1BGR5 or RGBA8), for comparisons.
 	gASTCBC1 = !gNativeBC && !getenv("PG_NO_ASTC_BC1") && [R->device supportsFamily:MTLGPUFamilyApple2];
 	gASTCBC3 = gASTCBC1 && !(getenv("PG_ASTC_BC3") && atoi(getenv("PG_ASTC_BC3")) == 0);		// on since v1.4.4 (Kevin); PG_ASTC_BC3=0 turns it off
+	// BC1/BC4/BC5 as ETC2/EAC (GTA-217): every Apple GPU samples ETC2 and EAC. Off unless PG_ETC_BC=1: re-encoded BC1
+	// shows on close-ups (texture_closeup.py, 2026-10-25: the stop sign's red gets blocky colour noise at Quality 900p
+	// and at Ultra Performance 432p; 34 dB from the BC1 picture over 8.4 million game BC1 blocks). It would save half of
+	// BC1's GPU memory: about 95 MB in the 6 GB city drive, 26 MB at Ultra Performance.
+	{ const char *v = getenv("PG_ETC_BC");
+	  gETCBC = !gNativeBC && v && atoi(v) != 0 && [R->device supportsFamily:MTLGPUFamilyApple2]; }
 	// Lite build (the app sets PG_LITE from its Info.plist); PG_LITE_TEXTURES=0 keeps textures whole there.
 	gSkipTopMip = getenv("PG_LITE") && strcmp(getenv("PG_LITE"), "0") && !(getenv("PG_LITE_TEXTURES") && !strcmp(getenv("PG_LITE_TEXTURES"), "0"));
 	// Textures of at least 512×512 texels lose their largest level where BC is decoded, a quarter of their
@@ -2851,6 +3475,22 @@ static bool setup() {
 	{ const char *v = getenv("PG_LITE_BIG_MIP_SKIP"); long side = v ? atol(v) : 0; if (gSkipTopMip && side >= 256 && side <= 8192 && !gNativeBC) gLiteBigSkip = (uint64_t)side * side; }
 	R->borderColors = [R->device supportsFamily:MTLGPUFamilyApple7];
 	if (!loadShaderLibrary(R->device)) return false;
+	// GTA-77: strips as indexed lists and the NaN/infinity clamp, on unless PG_STRIP_LISTS_OLD=1 / PG_NAN_CLAMP_OLD=1.
+	{
+		auto set = [](const char *name) { const char *v = getenv(name); return v && *v && strcmp(v, "0") != 0; };
+		gLaunchStripLists = !set("PG_STRIP_LISTS_OLD");
+		const char *all = getenv("PG_NAN_CLAMP");
+		gLaunchNanClamp = set("PG_NAN_CLAMP_OLD") ? 0 : all && !strcmp(all, "all") ? 2 : all && !strcmp(all, "sim") ? 3 : 1;
+		gStripLists.store(gLaunchStripLists); gNanClamp.store(gLaunchNanClamp);
+		gDrawStats = set("PG_MR_DRAW_STATS");
+		gUninitTrace = set("PG_MR_UNINIT");
+		gPipeWaitSmall = set("PG_PIPE_WAIT_SMALL");
+		if (const char *cold = getenv("PG_TEST_COLD_SHADERS_RESULT")) logf("TEST: the system's shader cache for this app: %s (PG_TEST_COLD_SHADERS).", cold);
+		logf("Metal renderer: triangle strips drawn as %s; NaN/infinity clamp %s, in %u pixel shaders (GTA-77).",
+		     gLaunchStripLists ? "indexed triangle lists" : "strips (PG_STRIP_LISTS_OLD)",
+		     !gLaunchNanClamp ? "off (PG_NAN_CLAMP_OLD)" : gLaunchNanClamp == 2 ? "on every float target (PG_NAN_CLAMP=all)" :
+		     gLaunchNanClamp == 3 ? "on RG11B10/RGB9E5 targets and float targets up to 256x256 (PG_NAN_CLAMP=sim)" : "on RG11B10/RGB9E5 targets", gNanClampShaders);
+	}
 	R->zeroBuffer = [R->device newBufferWithLength:65536 options:MTLResourceStorageModeShared];
 	memset(R->zeroBuffer.contents, 0, 65536);
 	R->visibility = [R->device newBufferWithLength:OCCLUSION_SLOTS * 8 options:MTLResourceStorageModeShared];
@@ -2886,8 +3526,18 @@ static bool setup() {
 	R->dssCache[0xdeb7ull] = [R->device newDepthStencilStateWithDescriptor:always];
 	if (!R->blitPipe) { logf("Metal renderer: present pipeline failed: %s", error.localizedDescription.UTF8String); return false; }
 	frameReportsInstall(R->device);
+	gReportDevice = R->device;
+	// GTA-217: which Metal device object the app got. A plain one is the GPU driver's (AGX...); a capture or validation layer
+	// wraps it (CaptureMTLDevice, MTLDebugDevice, MTLToolsDevice...), which records every resource and costs memory.
+	{
+		BOOL captureTools = NO;
+		if (@available(iOS 13.0, *)) captureTools = [MTLCaptureManager.sharedCaptureManager supportsDestination:MTLCaptureDestinationDeveloperTools];
+		const char *ta = getenv("MTL_CAPTURE_ENABLED"), *dw = getenv("METAL_DEVICE_WRAPPER_TYPE"), *dl = getenv("MTL_DEBUG_LAYER"), *di = getenv("DYLD_INSERT_LIBRARIES");
+		logf("Metal renderer: device object %s; capture to developer tools %s; MTL_CAPTURE_ENABLED=%s, METAL_DEVICE_WRAPPER_TYPE=%s, MTL_DEBUG_LAYER=%s, DYLD_INSERT_LIBRARIES=%s.",
+		     NSStringFromClass([R->device class]).UTF8String, captureTools ? "possible" : "not possible", ta ?: "-", dw ?: "-", dl ?: "-", di ?: "-");
+	}
 	logf("Metal renderer: %s, 32-bit float filtering %s, border colours %s, BC textures %s.", R->device.name.UTF8String, R->float32Filtering ? "yes" : "no (nearest fallback)",
-	     R->borderColors ? "yes" : "no", gNativeBC ? "native" : gASTCBC3 ? "decoded on the CPU (BC1 and BC3 as ASTC)" : gASTCBC1 ? "decoded on the CPU (BC1 as ASTC)" : gPackedBC1 ? "decoded on the CPU (BC1 as 16-bit)" : "decoded on the CPU");
+	     R->borderColors ? "yes" : "no", gNativeBC ? "native" : gETCBC && gASTCBC3 ? "decoded on the CPU (BC1, BC4, BC5 as ETC2/EAC, BC3 as ASTC)" : gASTCBC3 ? "decoded on the CPU (BC1 and BC3 as ASTC)" : gASTCBC1 ? "decoded on the CPU (BC1 as ASTC)" : gPackedBC1 ? "decoded on the CPU (BC1 as 16-bit)" : "decoded on the CPU");
 	if (gSkipTopMip) logf("Metal renderer: Lite: the game's textures go to the GPU without their largest level.");
 	else if (gSkipBigTopMip) logf("Metal renderer: textures of %llu texels or more go to the GPU without their largest level (PG_BIG_MIP_SKIP).", (unsigned long long)gSkipBigTopMip);
 	if (gLiteBigSkip) logf("Metal renderer: Lite: textures of %llu texels or more go to the GPU without their two largest levels (PG_LITE_BIG_MIP_SKIP).", (unsigned long long)gLiteBigSkip);
@@ -2927,6 +3577,7 @@ extern "C" bool PGMetalRendererAvailable(void) {
 	return [NSBundle.mainBundle URLForResource:name withExtension:@"metallib"] != nil;
 }
 
+static void startPeriodicShots(void);
 extern "C" void PGStartMetalRenderer(void *memory, uint64_t memorySize, uint64_t ring, uint64_t ringSize) {
 	R = new Renderer();
 	R->mem = (uint8_t *)memory; R->memSize = memorySize; R->ring = ring; R->ringSize = (uint32_t)ringSize;
@@ -2939,7 +3590,10 @@ extern "C" void PGStartMetalRenderer(void *memory, uint64_t memorySize, uint64_t
 	pthread_t thread;
 	pthread_create(&thread, &attr, threadMain, nullptr);
 	pthread_attr_destroy(&attr);
+	startPeriodicShots();
 }
+
+extern "C" uint64_t PGMetalPresentedFrames(void) { return presentedFrames.load(std::memory_order_relaxed); }
 
 extern "C" double PGMetalRendererFPS(void) {
 	if (!R) return 0;
@@ -2957,4 +3611,32 @@ extern "C" void PGMetalRendererCapture(const char *name) {
 	if (!R) return;
 	std::lock_guard<std::mutex> g(R->captureLock);
 	R->captureName = name;
+}
+// Test (PG_TEST_FRAME_EVERY=<seconds>, GTA-241): the presented picture every that many seconds after the renderer starts,
+// as NativeFrames/periodic/<PG_TEST_FRAME_PREFIX>t<seconds>.png, to see on a phone whether the ground has loaded mid-run.
+static void startPeriodicShots(void) {
+	const char *v = getenv("PG_TEST_FRAME_EVERY"); int every = v ? atoi(v) : 0;
+	if (every < 2) return;
+	const char *p = getenv("PG_TEST_FRAME_PREFIX"); std::string prefix = p ? p : "";
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+		for (int t = every; t <= 3600; t += every) {
+			sleep(every);
+			char name[96]; snprintf(name, sizeof name, "periodic/%st%04d", prefix.c_str(), t);
+			PGMetalRendererCapture(name);
+		}
+	});
+}
+// GTA-77 tests: a picture (Documents/NativeFrames/<name>.png) drawn with these switch settings (strips as lists 0/1,
+// NaN clamp 0/1/2); how many are still waiting; and the launch's settings.
+extern "C" void PGMetalRendererQueueShot(const char *name, int stripLists, int nanClamp) {
+	std::lock_guard<std::mutex> g(gShotLock);
+	gShots.push_back({name, stripLists ? 1 : 0, nanClamp < 0 ? 0 : nanClamp > 3 ? 3 : nanClamp});
+}
+extern "C" int PGMetalRendererShotsPending(void) {
+	std::lock_guard<std::mutex> g(gShotLock);
+	return (int)gShots.size();
+}
+extern "C" void PGMetalRendererFixes(int *stripLists, int *nanClamp) {
+	if (stripLists) *stripLists = gLaunchStripLists;
+	if (nanClamp) *nanClamp = gLaunchNanClamp;
 }

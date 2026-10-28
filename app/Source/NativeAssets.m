@@ -119,6 +119,7 @@ static bool modsOff;
 static NSString *modsFolder(void){
   if(modsOff)return [NSTemporaryDirectory() stringByAppendingPathComponent:@"NoMods"];
   const char *test=getenv("PG_MODS_FOLDER");
+  if(test&&*test&&test[0]!='/')return [NSTemporaryDirectory() stringByAppendingPathComponent:@(test)];   // a phone test: a folder in the app's tmp (empty: no mods)
   if(test&&*test)return @(test);
   return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"Mods"];
 }
@@ -1280,16 +1281,20 @@ static NSArray<NSNumber *> *preloadSelection(const char *filter){
   NSIndexSet *unavailable=preloadUnavailableIDs();
   NSArray<NSString *> *prefixes=nil;
   if(filter&&*filter){NSMutableArray *list=[NSMutableArray array];for(NSString *part in [@(filter) componentsSeparatedByString:@","])if(part.length)[list addObject:part];prefixes=list;}
-  NSMutableArray<NSNumber *> *ids=[NSMutableArray arrayWithCapacity:assetFiles.count];
-  for(NSUInteger i=0;i<assetFiles.count;i++){
-    if(prefixes){BOOL match=NO;NSString *path=assetFiles[i][0];for(NSString *prefix in prefixes)if([path hasPrefix:prefix]){match=YES;break;}if(!match)continue;}
+  NSArray *files=assetFiles;NSMutableArray<NSNumber *> *ids=[NSMutableArray arrayWithCapacity:files.count];
+  for(NSUInteger i=0;i<files.count;i++){
+    if(prefixes){BOOL match=NO;NSString *path=files[i][0];for(NSString *prefix in prefixes)if([path hasPrefix:prefix]){match=YES;break;}if(!match)continue;}
     if([unavailable containsIndex:i])continue;
     [ids addObject:@(i)];
   }
   return ids;
 }
+// The file list can be replaced while the preloader runs: "Start without mods" or a mod change rebuilds it
+// (PGReapplyMods) without the mods' files, and an ID from the old list then ran off the end of the new one (GTA-243,
+// a crash at launch). Sizes come from one snapshot with a bounds check; an ID that's gone reads as an empty file.
+static uint64_t preloadSize(uint32_t id){NSArray *files=assetFiles;return id<files.count?[files[id][1] unsignedLongLongValue]:0;}
 static uint64_t preloadPresent(uint32_t id,uint64_t offset,uint64_t length){
-  uint64_t size=[assetFiles[id][1] unsignedLongLongValue];
+  uint64_t size=preloadSize(id);
   NSString *base=[packedRoot stringByAppendingPathComponent:[NSString stringWithFormat:@"%u",id]];
   return pg_packed_present_bytes([base stringByAppendingString:@".data"].fileSystemRepresentation,[base stringByAppendingString:@".map"].fileSystemRepresentation,size,offset,length);
 }
@@ -1297,7 +1302,7 @@ void PGAssetPreloadMeasure(const char *filter,uint64_t *totalBytes,uint64_t *cac
   uint64_t total=0,cached=0;uint32_t files=0;
   if(assetFiles.count&&packedRoot){@autoreleasepool {
     for(NSNumber *identity in preloadSelection(filter)){
-      uint32_t id=identity.unsignedIntValue;uint64_t size=[assetFiles[id][1] unsignedLongLongValue];
+      uint32_t id=identity.unsignedIntValue;uint64_t size=preloadSize(id);
       total+=size;files++;if(size)cached+=preloadPresent(id,0,size);
     }
   }}
@@ -1321,7 +1326,7 @@ static const uint32_t preloadSpan=1024*1024;
 static bool preloadNextSpan(uint32_t *id,uint64_t *offset,uint32_t *length){
   pthread_mutex_lock(&preloadLock);bool found=false;
   while(!found&&preloadCursorFile<preloadIDs.count){
-    uint32_t file=preloadIDs[preloadCursorFile].unsignedIntValue;uint64_t size=[assetFiles[file][1] unsignedLongLongValue];
+    uint32_t file=preloadIDs[preloadCursorFile].unsignedIntValue;uint64_t size=preloadSize(file);
     if(preloadCursorOffset==0&&(!size||preloadPresent(file,0,size)==size)){preloadCursorFile++;continue;}
     if(preloadCursorOffset>=size){preloadCursorFile++;preloadCursorOffset=0;continue;}
     *id=file;*offset=preloadCursorOffset;*length=(uint32_t)MIN((uint64_t)preloadSpan,size-preloadCursorOffset);
@@ -1365,10 +1370,10 @@ static void *preloadLane(void *context){
       if(unavailable){
         // Drop the whole file from this run's plan and every later one.
         if(preloadMarkUnavailable(id)){
-        uint64_t size=[assetFiles[id][1] unsignedLongLongValue],present=preloadPresent(id,0,size);
+        uint64_t size=preloadSize(id),present=preloadPresent(id,0,size);
         atomic_fetch_sub(&preloadTotal,size);atomic_fetch_sub(&preloadCached,present);
         pthread_mutex_lock(&preloadLock);if(preloadCursorFile<preloadIDs.count&&preloadIDs[preloadCursorFile].unsignedIntValue==id){preloadCursorFile++;preloadCursorOffset=0;}pthread_mutex_unlock(&preloadLock);
-        char line[PATH_MAX+96];snprintf(line,sizeof line,"Asset preload: %s differs in size from the manifest on the server; skipped.",[assetFiles[id][0] UTF8String]);pg_log(line);
+        char line[PATH_MAX+96];snprintf(line,sizeof line,"Asset preload: %s differs in size from the manifest on the server; skipped.",({NSArray *files=assetFiles;id<files.count?[files[id][0] UTF8String]:"?";}));pg_log(line);
         }
       }else if(stored){
         atomic_store(&preloadConsecutiveFailures,0);
@@ -1386,7 +1391,7 @@ static void *preloadLane(void *context){
     // Last lane out re-measures: engine demand fills count too.
     uint64_t total=0,cached=0;uint32_t files=0;
     pthread_mutex_lock(&preloadLock);NSArray<NSNumber *> *ids=preloadIDs;pthread_mutex_unlock(&preloadLock);
-    @autoreleasepool {NSIndexSet *unavailable=preloadUnavailableIDs();for(NSNumber *identity in ids){uint32_t file=identity.unsignedIntValue;if([unavailable containsIndex:file])continue;uint64_t size=[assetFiles[file][1] unsignedLongLongValue];total+=size;files++;if(size)cached+=preloadPresent(file,0,size);}}
+    @autoreleasepool {NSIndexSet *unavailable=preloadUnavailableIDs();for(NSNumber *identity in ids){uint32_t file=identity.unsignedIntValue;if([unavailable containsIndex:file])continue;uint64_t size=preloadSize(file);total+=size;files++;if(size)cached+=preloadPresent(file,0,size);}}
     atomic_store(&preloadCached,cached);atomic_store(&preloadTotal,total);
     // Went through the whole plan without a pause and still missing bytes:
     // some spans kept failing. Say so instead of looking merely paused.
@@ -1402,7 +1407,7 @@ bool PGAssetPreloadStart(const char *filter,unsigned lanes){
   int idle=0;if(!atomic_compare_exchange_strong(&preloadRunning,&idle,-1))return true;
   lanes=MAX(1u,MIN(6u,lanes));
   NSArray<NSNumber *> *ids=preloadSelection(filter);uint64_t total=0,cached=0;
-  for(NSNumber *identity in ids){uint32_t file=identity.unsignedIntValue;uint64_t size=[assetFiles[file][1] unsignedLongLongValue];total+=size;if(size)cached+=preloadPresent(file,0,size);}
+  for(NSNumber *identity in ids){uint32_t file=identity.unsignedIntValue;uint64_t size=preloadSize(file);total+=size;if(size)cached+=preloadPresent(file,0,size);}
   pthread_mutex_lock(&preloadLock);preloadIDs=ids;preloadCursorFile=0;preloadCursorOffset=0;pthread_mutex_unlock(&preloadLock);
   atomic_store(&preloadTotal,total);atomic_store(&preloadCached,cached);atomic_store(&preloadDownloaded,0);
   atomic_store(&preloadReported,total?cached*100/total:100);atomic_store(&preloadConsecutiveFailures,0);

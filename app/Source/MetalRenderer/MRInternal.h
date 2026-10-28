@@ -32,6 +32,7 @@ enum : uint32_t {
 	kVertexBufferTop = 30,		// vertex buffer slot s -> buffer 30 - s
 	kZeroVertexBuffer = 15,		// zero stream for shader inputs the input layout does not provide
 	kUavTextureBase = 64,
+	kNanClampBuffer = 30,		// pixel shaders: which colour outputs to clean of NaN/infinity (GTA-77, Scripts/build_metal_shaders.py)
 };
 
 // ---- shader reflection (GeneratedResources/shader-reflection.jsonl) -----------------------------------------------------
@@ -64,6 +65,7 @@ struct ShaderInfo {
 	bool functionFailed = false;
 	uint32_t uid = 0;
 	uint32_t textureFloatSamplers = 0;		// bit per sampler index that is paired with some texture
+	bool nanClamp = false;		// pixel shader that reads pg_nanc (buffer kNanClampBuffer) and cleans its colour outputs (GTA-77)
 };
 
 // ---- objects ----------------------------------------------------------------------------------------------------------
@@ -80,6 +82,14 @@ struct Texture : Object {
 	int bcKind = 0;			// 1..7: block-compressed source (decoded on the CPU unless bcNative)
 	bool bcNative = false;		// stored as a Metal BC format: uploads, copies and readbacks use the blocks as they are
 	bool astc = false;		// BC1 (or BC3, gASTCBC3) rewritten as ASTC 4x4 on upload (gASTCBC1); readbacks use the original blocks
+	bool etc = false;		// BC1, BC4 or BC5 as ETC2 RGB / EAC R11 / EAC RG11 (gETCBC, GTA-217): the BC size, re-encoded
+	bool etcDecided = false;	// BC1 as ETC2: its first upload had no transparent texel, or the GPU used it already (no more switching to ASTC)
+	MTLTextureDescriptor *etcDesc = nil;	// BC1 as ETC2 until decided: the descriptor, to make it ASTC instead
+	// BC1 as ETC2 until the GPU first uses it: the uploaded levels wait here, so that a transparent texel in any level
+	// (often only the small ones) makes the texture ASTC before anything is encoded.
+	struct EtcPending { uint32_t level, slice, x, y, z, w, h, d, bpr, rpi; std::vector<uint8_t> data; };
+	std::vector<EtcPending> etcPending;
+	bool etcAlpha = false;
 	bool bcSrgb = false;
 	// Lite build (gSkipTopMip): GPU levels dropped from the top. The GPU texture is that many times half
 	// the size and has that many fewer levels; width/height/mips stay the game's, so GPU level = mip - skip.
@@ -87,9 +97,11 @@ struct Texture : Object {
 	uint64_t lastUse = 0;		// command buffer serial that last referenced it
 	std::unordered_map<uint64_t, id<MTLTexture>> views;
 	uint64_t gpuBytes = 0, bcGameBytes = 0;		// GPU allocation, and the compressed size the game budgets (for the report)
+	uint8_t memKind = 0;		// the memory breakdown's texture kind (NativeMemoryBreakdown.h, GTA-217)
 	std::unordered_map<uint64_t, std::vector<uint8_t>> compressedShadow;		// "mip:layer" -> original blocks, for CPU readbacks
 	Texture *depthProxy = nullptr;		// r32float copy of a depth texture, for shaders that read it as float (if needed)
 	bool proxyDirty = true;
+	bool written = false;		// something wrote it (upload, clear, render, copy): GTA-77 read-before-write check
 	~Texture() override;
 };
 
@@ -168,6 +180,7 @@ struct FormatInfo {
 	bool srgb = false, a8 = false;
 	bool bcNative = false;		// kept compressed on the GPU (gNativeBC), not decoded on the CPU
 	bool astc = false;		// BC1 (or BC3, gASTCBC3) stored as ASTC 4x4 (gASTCBC1)
+	bool etc = false;		// BC1/BC4/BC5 stored as ETC2 RGB / EAC R11 / EAC RG11 (gETCBC)
 };
 // The GPU samples BC1-7 itself (Apple silicon iPads and Macs; not iPhones): BC textures stay
 // compressed, 2 to 8 times smaller than decoded. Set once by the renderer before any texture.
@@ -178,7 +191,11 @@ extern bool gPackedBC1;
 // BC1 rewritten block by block as ASTC 4x4 (Source/BC1ToASTC.c): 8 bits per texel, half of A1BGR5 and a
 // quarter of RGBA8, for sRGB BC1 too. Every Apple GPU reads ASTC; takes precedence over gPackedBC1.
 extern bool gASTCBC1;
-extern bool gASTCBC3;		// BC3 as ASTC too (on; PG_ASTC_BC3=0 or Settings › Experimental turns it off; lossy alpha, GTA-118)
+extern bool gASTCBC3;
+// BC1 as ETC2 RGB (half of ASTC 4x4: BC1's own 4 bits per texel), BC4 as EAC R11 and BC5 as EAC RG11 (GTA-217), where the
+// GPU can't sample BC. Re-encoded by etcpak (Source/BCToETC.cpp), so close to the original but not exact. A BC1
+// texture whose first upload has transparent texels stays ASTC. PG_ETC_BC=0 turns it off.
+extern bool gETCBC;		// BC3 as ASTC too (on; PG_ASTC_BC3=0 or Settings › Experimental turns it off; lossy alpha, GTA-118)
 // Lite build: the game's loaded textures go to the GPU without their largest mip level (a quarter
 // of the memory; at phone render resolutions that level is rarely sampled), as consoles shipped them.
 extern bool gSkipTopMip;
@@ -195,6 +212,7 @@ MTLVertexFormat vertexFormat(uint32_t dxgi, uint32_t *bytes);
 
 // ---- shader library ---------------------------------------------------------------------------------------------------
 bool loadShaderLibrary(id<MTLDevice> device);
+extern uint32_t gNanClampShaders;		// pixel shaders in the library that carry the NaN/infinity clean (GTA-77)
 ShaderInfo *findShader(const std::string &hash);
 id<MTLFunction> shaderFunction(ShaderInfo *info);
 

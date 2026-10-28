@@ -68,6 +68,8 @@ if 'pg_record_trap' not in text:
         'extern void pg_record_trap(int) __attribute__((weak));\nvoid wasm_rt_trap(wasm_rt_trap_t code) {\n  if(pg_record_trap)pg_record_trap(code);')
     runtime.write_text(text)
 run('python3', 'Scripts/generate_imports.py')
+# Engine code with wasm2c's own access names while the patchers below match it (a prepared tree may be plain already).
+run('python3', 'Scripts/prepare_plain_engine.py', 'off')
 run('python3', 'Scripts/prepare_heap_diagnostics.py')
 run('python3', 'Scripts/prepare_memory_pressure.py')
 shutil.copyfile(options.mirror / 'data/manifest.json', root / 'Resources/manifest.json')
@@ -101,9 +103,9 @@ run('python3', 'Scripts/prepare_fixup_guard.py')
 run('python3', 'Scripts/prepare_format_strings.py')
 run('python3', 'Scripts/prepare_video_memory.py')
 run('python3', 'Scripts/prepare_plain_dsp.py')
-run('python3', 'Scripts/prepare_plain_engine.py')
 run('python3', 'Scripts/prepare_cash_stats.py')
 run('python3', 'Scripts/prepare_native_opus.py')
+run('python3', 'Scripts/prepare_native_inflate.py')
 run('python3', 'Scripts/prepare_render_list_guard.py')
 run('python3', 'Scripts/prepare_stored_vehicle_mods.py')
 run('python3', 'Scripts/prepare_hud_layout.py')
@@ -130,6 +132,12 @@ run('python3', 'Scripts/prepare_memory_file_create.py')
 run('python3', 'Scripts/prepare_longjmp.py')
 run('python3', 'Scripts/prepare_trap_guards.py')
 run('python3', 'Scripts/prepare_stale_cbuffers.py')
+# Plain memory accesses engine-wide (GTA-187/216): after every script that matches or inserts engine code, which
+# expects wasm2c's own access names.
+run('python3', 'Scripts/prepare_plain_engine.py')
+# Every engine function reads the memory's address once (GTA-216); after all scripts that write engine code.
+run('python3', 'Scripts/prepare_memory_base.py')
+run('python3', 'Scripts/prepare_shared_tables.py')  # last: it rewrites every call_indirect line (GTA-217)
 # The BC texture decoder header (MIT): phones without BC texture support get decoded textures.
 bcdec = root / 'Tools/bcdec'
 if not bcdec.exists():

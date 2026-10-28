@@ -19,6 +19,8 @@ settings:
       - WASM_RT_USE_MMAP=0
       - WASM_RT_MEMCHECK_BOUNDS_CHECK=1
       - PG_UNCHECKED_MEMORY=1
+      # Engine functions read the memory's address once (Scripts/prepare_memory_base.py, GTA-216); 0 reads it per access.
+      - PG_LOCAL_MEMORY_BASE=1
       - WASM_RT_SKIP_SIGNAL_RECOVERY=1
       - WASM_RT_MAX_CALL_STACK_DEPTH=10000
     HEADER_SEARCH_PATHS:
@@ -69,7 +71,11 @@ targets:
       - App
       - Source
       - path: Generated
-        compilerFlags: -w
+        # No warnings from the generated engine code, except a stale PGO profile's (Scripts/pgo_check.py counts them).
+        # No -frounding-math for the engine (GTA-216): wasm can't change the rounding mode and nothing in the game does,
+        # and strict float operations kept the compiler from optimising (the occlusion rasterizer had 3x the instructions).
+        # -ffp-contract=off: no fused multiply-adds, as wasm computes.
+        compilerFlags: -Wno-everything -Wprofile-instr-out-of-date -fno-rounding-math -ffp-contract=off
         excludes:
           - "*.h"
           - "*.tsv"
@@ -112,7 +118,7 @@ targets:
       properties:
         CFBundleDisplayName: GTA V Port
         CFBundleDevelopmentRegion: en
-        CFBundleShortVersionString: "1.5.1"
+        CFBundleShortVersionString: "1.5.2"
         # Your game-file server may be a plain-http address on your tailnet.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
@@ -125,7 +131,7 @@ targets:
         # The app folder (logs) is visible in the Files app.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        CFBundleVersion: "19"
+        CFBundleVersion: "20"
         UILaunchScreen: {}
         # The scene lifecycle (GTA-171): an app built with the iOS 27 SDK stops at launch without it. One window
         # (AppDelegate.swift, SceneDelegate); a TV (AirPlay or HDMI) gets its own scene for the game's picture (TVSceneDelegate).

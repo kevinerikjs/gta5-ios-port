@@ -3,9 +3,10 @@ import UIKit
 
 /// Anonymous player stats (GTA-137): how many people play each day, on which iPhones, how long, how smoothly,
 /// which missions they reach, and whether mods or cheats are in use. Each install gets a random ID; no Apple
-/// ID, names, file paths or log text are sent. Events wait in a small file and go out in batches to the
-/// website's /api/stats, which checks them against its own list and forwards them to the developer's
-/// stats service (the service's key lives on the server, not in the app). Simulator builds send nothing
+/// ID, names, file paths or log text are sent. Events wait in a small file and go out in batches to
+/// fivestarport.site/api/stats, which checks them against its own list and forwards them to the developer's
+/// stats service (the service's key lives on the server, not in the app). Before v1.5.2 the app sent them to
+/// fivestarport.vercel.app, which now redirects there (GTA-240). Simulator builds send nothing
 /// unless PG_STATS_ENDPOINT points them somewhere for a test, and builds made with PG_NO_STATS send nothing.
 final class Analytics {
     static let shared = Analytics()
@@ -28,7 +29,7 @@ final class Analytics {
         #elseif PG_NO_STATS
         endpoint = nil   // the developer's own test builds (SWIFT_ACTIVE_COMPILATION_CONDITIONS PG_NO_STATS) don't count
         #else
-        endpoint = URL(string: "https://fivestarport.vercel.app/api/stats")
+        endpoint = URL(string: "https://fivestarport.site/api/stats")
         #endif
         if let data = try? Data(contentsOf: file), let saved = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] { pending = saved }
     }

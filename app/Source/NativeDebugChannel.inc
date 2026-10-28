@@ -234,6 +234,10 @@ void PGDebugCommand(const char *command, char *reply, size_t size) {
 #endif
   } else if (!strcmp(word, "state")) {
     pg_debug_state_json(&j);
+  } else if (!strcmp(word, "mem")) {
+    // mem [shaders]: the memory breakdown lines into the log now (GTA-217); "shaders" also counts the engine's shader bytecode
+    PGLogMemoryBreakdown(strstr(rest, "shaders") ? "debug, shaders" : "debug");
+    pg_json_put(&j, "{\"ok\":true}");
   } else if (!strcmp(word, "audiodump")) {
     // audiodump <path> <seconds>: the next seconds of the game's sound into a file (see PGFillAudio)
     char path[1024] = ""; double seconds = 0;

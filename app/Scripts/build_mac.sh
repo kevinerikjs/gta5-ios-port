@@ -14,6 +14,9 @@ sed -i '' 's|\(/\* libarchive.xcframework in Frameworks \*/ = {isa = PBXBuildFil
 # PG_NO_STATS=1: the developer's own test builds send no play stats (App/Analytics.swift).
 set --
 if [ -n "${PG_NO_STATS:-}" ]; then set -- "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited) PG_NO_STATS"; fi
+# Profile-guided optimization (GTA-172/216), as build_ipa.sh: PG_PGO_PROFILE (.profdata) and PG_ORDER_FILE (hot functions).
+if [ -n "${PG_PGO_PROFILE:-}" ]; then set -- "$@" "OTHER_CFLAGS=\$(inherited) -fprofile-instr-use=$PG_PGO_PROFILE -Wno-profile-instr-unprofiled"; fi
+if [ -n "${PG_ORDER_FILE:-}" ]; then set -- "$@" "OTHER_LDFLAGS=\$(inherited) -Wl,-order_file,$PG_ORDER_FILE"; fi
 xcodebuild -project PlayGTA5Native.xcodeproj -scheme PlayGTA5Native \
   -configuration Release -destination 'platform=macOS,variant=Mac Catalyst,arch=arm64' \
   -derivedDataPath Build/Mac -jobs "${MAC_JOBS:-3}" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \

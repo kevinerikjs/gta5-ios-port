@@ -22,6 +22,24 @@ void pg_engine_thread_attributes(pthread_attr_t *attrs) {
   }
   if (qos) pthread_attr_set_qos_class_np(attrs, (qos_class_t)qos, 0);
 }
+// Per-thread classes (GTA-216, from another team's native port of the game: the A15 has 2 performance cores, and the
+// threads that decide the frame time should get them). Test switch only: on Kevin's phone it gained nothing at 30 FPS and,
+// unlocked, starved the loading threads (one run never reached the world in 300 s). PG_QOS_MAP=1 gives:
+//   user-interactive: gta.engine.main and [RAGE] RenderThread (our Metal thread already is),
+//   utility: background work no frame waits for (save list, replay files, music scan, async writes, live streaming),
+//   user-initiated (as now): everything else (job workers, audio, streaming, physics, particles).
+// Called by each engine thread once it has its name.
+void pg_engine_thread_qos(const char *name) {
+  static int map = -1;
+  if (map < 0) { const char *v = getenv("PG_QOS_MAP"); map = v && atoi(v) == 1; if (map) pg_log("Engine thread classes: per thread (PG_QOS_MAP=1)."); }
+  if (!map || !name) return;
+  static const char *const interactive[] = {"gta.engine.main", "[RAGE] RenderThread"};
+  static const char *const utility[] = {"[RAGE] EnumerationThread", "ReplayFileManager", "User Music Scan", "fiWriteAsyncDataWorker", "[StreamingLive]"};
+  qos_class_t qos = QOS_CLASS_USER_INITIATED;
+  for (unsigned i = 0; i < sizeof interactive / sizeof *interactive; i++) if (strstr(name, interactive[i])) qos = QOS_CLASS_USER_INTERACTIVE;
+  for (unsigned i = 0; i < sizeof utility / sizeof *utility; i++) if (strstr(name, utility[i])) qos = QOS_CLASS_UTILITY;
+  if (qos != QOS_CLASS_USER_INITIATED) pthread_set_qos_class_self_np(qos, 0);
+}
 struct EngineThread {struct w2c_env host;struct w2c_wasi__snapshot__preview1 wasi;u64 pthread,start,arg;wasm_rt_funcref_t *table;};
 static _Thread_local struct EngineThread *currentThread;
 // Function tables (GTA-192). Each engine thread is its own module instance with its own copy of the indirect function
@@ -56,9 +74,14 @@ static bool testTablesFail(void){
   #endif
   return false;
 }
+// Tables alive (in use or kept), for the memory breakdown (GTA-217).
+static _Atomic int64_t tablesAlive;
+uint64_t PGFunctionTableBytes(uint64_t *count){int64_t n=atomic_load(&tablesAlive);if(n<0)n=0;if(count)*count=(uint64_t)n;return (uint64_t)n*tableElements*sizeof(wasm_rt_funcref_t);}
 static wasm_rt_funcref_t *newTable(uint32_t elements){
   if(testTablesFail())return NULL;
-  return calloc(elements,sizeof(wasm_rt_funcref_t));
+  wasm_rt_funcref_t *table=calloc(elements,sizeof(wasm_rt_funcref_t));
+  if(table)atomic_fetch_add(&tablesAlive,1);
+  return table;
 }
 static wasm_rt_funcref_t *takeTable(uint32_t elements){
   wasm_rt_funcref_t *data=NULL;
@@ -73,6 +96,7 @@ static void keepTable(wasm_rt_funcref_t *data,uint32_t elements){
   pthread_mutex_lock(&tablesLock);
   if(keptCount<KEPT_TABLES&&elements==tableElements){keptTables[keptCount++]=data;data=NULL;}
   pthread_mutex_unlock(&tablesLock);
+  if(data)atomic_fetch_sub(&tablesAlive,1);
   free(data);
 }
 // Tops the kept tables up to SPARE_TABLES after a thread took one (it doesn't matter if this fails).
@@ -85,8 +109,25 @@ static void makeSpareTables(void){
     keepTable(spare,tableElements);
   }
 }
+// One function table for every engine thread (GTA-217). Every entry of the game's table belongs to the game module
+// itself (no imported functions in it), so an entry's module instance is always the calling instance: with
+// Scripts/prepare_shared_tables.py the generated code passes the caller's instance instead of the entry's, and the
+// threads use the main instance's table, filled once. That saves a 2.9 MB copy per engine thread (28 in a city drive,
+// 76 MB). Off by default in v1.5.2 (each thread its own copy, as before): the lab's teleport stress stopped 2 times in
+// 4 runs with it and the other always-on cuts, 0 in 6 without, and it wasn't cleared in time. PG_SHARED_TABLES=1 turns
+// it on (the code passes the caller's instance either way).
+static wasm_rt_funcref_t *sharedTable;
+static int sharedTables=-1;
+static bool useSharedTables(void){
+  if(sharedTables<0){const char *v=getenv("PG_SHARED_TABLES");sharedTables=v&&atoi(v)==1;
+    pg_log(sharedTables?"Engine function tables: one for every engine thread (PG_SHARED_TABLES=1).":"Engine function tables: a copy for every engine thread (PG_SHARED_TABLES=1: one for all).");}
+  return sharedTables;
+}
+// Whether init_tables must leave the table alone: it is the main instance's, already filled.
+bool pg_funcref_table_shared(wasm_rt_funcref_table_t *table){return sharedTable&&table->data==sharedTable&&currentThread;}
 void pg_allocate_funcref_table(wasm_rt_funcref_table_t *table,uint32_t elements,uint32_t maxElements){
   if(!tableElements)tableElements=elements;
+  if(currentThread&&sharedTable&&elements==tableElements&&useSharedTables()){table->data=sharedTable;table->size=elements;table->max_size=maxElements;return;}
   #if TARGET_OS_SIMULATOR
   if(!tablesStartedAt)tablesStartedAt=nowMS();
   #endif
@@ -100,18 +141,20 @@ void pg_allocate_funcref_table(wasm_rt_funcref_table_t *table,uint32_t elements,
   }
   if(!data){pg_log("Engine function table: still no memory after 5 s; this engine thread stops.");wasm_rt_trap(WASM_RT_TRAP_OOB);}
   table->data=data;table->size=elements;table->max_size=maxElements;
+  if(!currentThread&&!sharedTable&&useSharedTables()){sharedTable=data;atomic_store(&startupSpareMade,true);return;}	// the main instance's: no spares needed
   if(!atomic_load(&startupSpareMade)){
     wasm_rt_funcref_t *spare=calloc(elements,sizeof *spare);		// with the main instance, while memory is plentiful
-    if(spare)keepTable(spare,elements);
+    if(spare){atomic_fetch_add(&tablesAlive,1);keepTable(spare,elements);}
     atomic_store(&startupSpareMade,true);
   }
 }
 void pg_free_funcref_table(wasm_rt_funcref_table_t *table){
+  if(sharedTable&&table->data==sharedTable){table->data=NULL;table->size=0;return;}	// the main instance's, still in use
   keepTable(table->data,table->size);table->data=NULL;table->size=0;
 }
 static void disposeThread(void *pointer) {
   struct EngineThread *thread=pointer;
-  wasm2c_game_free(&thread->host.game);keepTable(thread->table,tableElements);wasm_rt_free_thread();free(thread);currentThread=NULL;
+  wasm2c_game_free(&thread->host.game);if(thread->table!=sharedTable)keepTable(thread->table,tableElements);wasm_rt_free_thread();free(thread);currentThread=NULL;
 }
 // Native names for the engine's threads, for the Threads line in the log (GTA-162, NativeThreadCPU.c). The game names
 // every thread it starts: rage::sysIpcCreateThread (f128) mallocs a 56-byte block, copies the name into it at offset
@@ -125,7 +168,7 @@ static void nameEngineThread(struct EngineThread *thread) {
     if(n>=2&&!base[arg+24+n]){memcpy(name,base+arg+24,n);name[n]=0;}
   }
   if(!name[0])snprintf(name,sizeof name,"gta.engine.start%llu",(unsigned long long)thread->start);
-  pthread_setname_np(name);
+  pthread_setname_np(name);pg_engine_thread_qos(name);
   char line[96];snprintf(line,sizeof line,"Engine thread: %s.",name);pg_log(line);
 }
 static void *runThread(void *pointer) {
@@ -148,7 +191,7 @@ static void *runThread(void *pointer) {
     wasm_rt_funcref_t entry=table->data[thread->start];
     wasm_rt_func_type_t expected=wasm2c_game_get_func_type(1,1,WASM_RT_I64,WASM_RT_I64);
     if(!entry.func||!entry.func_type||memcmp(entry.func_type,expected,32))wasm_rt_trap(WASM_RT_TRAP_CALL_INDIRECT);
-    u64 result=((u64 (*)(void *,u64))entry.func)(entry.module_instance,thread->arg);
+    u64 result=((u64 (*)(void *,u64))entry.func)(&thread->host.game,thread->arg);	// the thread's own instance (GTA-217: the table may be shared)
     w2c_game_0x5Femscripten_thread_exit(&thread->host.game,result);
   }
   pthread_cleanup_pop(1);return NULL;
@@ -159,7 +202,7 @@ u32 w2c_env_0x5F_pthread_create_js(struct w2c_env *host,u64 pthread,u64 attr,u64
   thread->pthread=pthread;thread->start=routine;thread->arg=argument;
   // Its function table first (GTA-192): a kept one, or a new one; without one the engine gets EAGAIN, not a crash.
   testTablesFail();
-  if(tableElements){
+  if(tableElements&&!(sharedTable&&useSharedTables())){
     thread->table=takeTable(tableElements);
     if(!thread->table){
       char line[160];snprintf(line,sizeof line,"Engine thread not started: no memory for its function table (%u entries); pthread_create answers EAGAIN.",tableElements);pg_log(line);

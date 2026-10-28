@@ -258,7 +258,12 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
                 limit = thermalFrameLimit; interval = thermalPresentInterval
             }
             // With the game on a TV the phone's screen shows only the controls: 60 Hz is plenty there.
-            let rate = limit >= 2 && interval == 0 || tvWindow != nil ? min(60, top) : top
+            var rate = limit >= 2 && interval == 0 || tvWindow != nil ? min(60, top) : top
+            // GTA-216 (another team's native port): iOS lets the performance cores sleep when the display link runs slower
+            // than the screen, and CPU-bound frames then take longer. PG_DISPLAY_RATE=top (tests, until the phone A/B
+            // decides) keeps the display link at the screen's top rate at every frame cap; the engine's limiter and the
+            // present interval still pace the pictures. Test switch only: no gain on Kevin's phone (GTA-216 batch 1).
+            if environment["PG_DISPLAY_RATE"] == "top" && tvWindow == nil { rate = top }
             range = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
         }
         displayLink?.preferredFrameRateRange = range
@@ -270,6 +275,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     }
     private var askedDisplayRate = ""
     /// Display link calls since the last Display line, and the rate its latest call was for (GTA-200).
+    private var lastPowerSample = 0.0, powerText = ""
     private var displayLinkCalls = 0, displayLinkSince = CACurrentMediaTime(), displayLinkHz = 0.0
     /// Every 10 s with the Health line (GTA-200): the rate asked, the display link's rate, how many pictures reached the
     /// screen and the gaps between them, and whether a finger touched the screen or a controller is connected.
@@ -1761,6 +1767,8 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             resumeAudio(reason: "silent while playing")
         }
         if healthLines % 6 == 1 { PGLogMemoryPools() }   // where the memory is, once a minute
+        // What the footprint is made of, every 30 s (GTA-217). Walking the app's memory takes a few ms: off the main thread.
+        if healthLines % 3 == 1 { DispatchQueue.global(qos: .utility).async { PGLogMemoryBreakdown("30 s") } }
         var reads = [UInt64](repeating: 0, count: 6)
         reads.withUnsafeMutableBufferPointer { PGAssetHealth($0.baseAddress) }
         let now = [PGMemoryBudgetClamps()] + reads + [PGMemoryBudgetEvictions()]
@@ -2133,7 +2141,22 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         if now - lastFPSLabelUpdate >= 0.25 {
             if touchControlsAvailable { fpsLabel.isHidden = !GameSettings.shared.showFPS }
             let fps = PGRenderedFramesPerSecond()
-            let text = fps > 0 ? String(format: "%.0f FPS", fps) : "— FPS"
+            var text = fps > 0 ? String(format: "%.0f FPS", fps) : "— FPS"
+            // With heat and power (GTA-216): CPU watts, busy cores and the thermal state, refreshed once a second.
+            if GameSettings.shared.showPower || ProcessInfo.processInfo.environment["PG_PERF_OVERLAY"] == "1" {
+                if now - lastPowerSample >= 1 {
+                    var watts = 0.0, cores = 0.0, pShare = 0.0
+                    if PGPerfOverlaySample(&watts, &cores, &pShare) != 0 {
+                        let heat = ["nominal", "fair", "serious", "critical"][min(3, ProcessInfo.processInfo.thermalState.rawValue)]
+                        powerText = String(format: " · %.1f W · %.1f cores · ", watts, cores) + heat
+                    }
+                    lastPowerSample = now
+                }
+                text += powerText
+            }
+            // Room for the longer text (the counter is 68 points wide for the frame rate alone).
+            let width: CGFloat = powerText.isEmpty || text.count < 12 ? (lowMemoryDevice ? 84 : 68) : (lowMemoryDevice ? 250 : 234)
+            if let constraint = fpsLabel.constraints.first(where: { $0.firstAttribute == .width && $0.secondItem == nil }), constraint.constant != width { constraint.constant = width }
             if lowMemoryDevice {
                 let line = NSMutableAttributedString(attributedString: lowMemoryMark)
                 line.append(NSAttributedString(string: text, attributes: [.font: fpsLabel.font as Any, .foregroundColor: UIColor.white]))
