@@ -286,6 +286,21 @@ final class GameSettings {
         if settings.smallerEngineHeaps { off("PG_SMALL_ENGINE_HEAPS", "1") }
         if settings.meshMemoryRelease { off("PG_MESH_RELEASE", "3") }
     }
+    /// Game controller feedback (on by default): rumble on the controller's motors, and the
+    /// DualSense's adaptive triggers (ControllerFeedback).
+    var controllerRumble: Bool {
+        get { defaults.object(forKey: "controllerRumble") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "controllerRumble") }
+    }
+    var adaptiveTriggers: Bool {
+        get { defaults.object(forKey: "adaptiveTriggers") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "adaptiveTriggers") }
+    }
+    /// DualSense / DualShock light bar: the character's colour, flashing with the wanted level.
+    var controllerLight: Bool {
+        get { defaults.object(forKey: "controllerLight") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "controllerLight") }
+    }
     var showFPS: Bool {
         get { defaults.object(forKey: "showFPS") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "showFPS") }
