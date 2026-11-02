@@ -1,5 +1,114 @@
 # Changelog
 
+## v1.5.2
+
+Lighter and steadier, the same version for iPhone and Mac.
+
+### Performance
+- **The game needs about 40% less CPU for the same frames.** Measured on an iPhone 13 Pro Max with the built-in benchmark: about 1 CPU core instead of 1.8 at 30 FPS. With the frame rate unlocked, each frame costs about 18% less energy.
+- **About 200 MB less memory** on 6 GB iPhones, and about 300 MB less on Macs with 8 GB. The game now gives the memory of 3D models back once the GPU has them, and freed memory really goes back to iOS.
+
+### Adding the game (iPhone and iPad)
+- **A step-by-step guide**: Game files › Show me how shows each step with a moving picture. Open the GTA V Port folder, move your game folder or its .zip/.rar into it (touch and hold › Move › On My iPhone › GTA V Port), come back, tap Unpack for an archive, and the app checks every file. It opens by itself the first time there are no game files.
+- **Two ways in**: the GTA V Port folder in Files, or a download link. The Choose a folder… and Choose an archive… buttons are gone on iPhone: they failed on many sideloaded installs. A folder you picked in an earlier version keeps working, and the Mac keeps both buttons.
+- **An archive in the folder is recognized**: Game files says "Found a game archive" with an Unpack button instead of "Nothing in this app's folder".
+
+### 4 GB iPhones
+- **Far fewer missing roads and ground while you drive.** On iPhones that give the game about 2 GB (iPhone 11, 12 and 13 with 4 GB, and others), the game used to throw textures out and load them again thousands of times a minute. Cars drove over nothing and trees floated. It now keeps a smaller safety margin that fits these phones and uses less memory overall. It also stays further from the limit where iOS closes the app.
+- **Every graphics preset keeps Ultra Performance's memory settings on these phones**: the textures and draw distance that fit. If you picked a higher preset, this update moves you back to Ultra Performance once; you can still change it in Settings.
+
+### Fixes
+- **Alamo Sea water**: after an update, part of the lake by the trailer park could be missing and show bare lakebed as a big hard-edged shape. Fixed.
+- **Starting without mods after a crash** could itself crash right away. Fixed.
+- **Better default graphics** for 6 GB iPhones on a free Apple ID: Performance instead of Battery, a sharper picture at no measured cost.
+- Other bug fixes and improvements.
+
+### Translations
+- **Bulgarian is nearly complete** (848 of 852 lines), with fixes to earlier lines and capitalization. Thanks @g_m1sh3vvw!
+- **More Turkish** (66 → 207 lines). Thanks Efe Tokdemir!
+
+## v1.5.1
+
+A fix for v1.5, the same version for iPhone and Mac.
+
+- **Driving controls no longer turn into menu arrows with some script mods.** With certain script mods (.asi files) installed, v1.5 could swap the play buttons (gas, brake and the rest) for the menu arrows, Select and Back, with no menu on screen. ATM screens still get their Back button, and an open mod menu such as Menyoo still gets the arrows.
+
+## v1.5
+
+A big update, the same version for iPhone and Mac.
+
+### Missions and story
+- **Eye in the Sky**: the scan now finishes. The RT button stays on screen while you hold it on a target, and in the helicopter the Interact button switches on thermal vision, so the mission goes on.
+- **Monkey Business** (the dive) and **Barry's "The Drag"** (the stash car): a Y button shows when the mission waits for you to dive or get out.
+- **The Jewel Store Job**: the game no longer stops when it autosaves after the mission.
+- **The Atomic Blimp and Interaction Menu messages** show once instead of coming back after every start.
+- **Coin-operated telescopes** on the beach and the piers open their view after you pay. The game's own animation placed Franklin beside the telescope, so the view never opened.
+- **ATMs**: with touch controls, the ATM screen now shows Back (and the menu arrows), so you can leave it.
+- **Garages**: you can walk out of a car garage on foot again, and a garage car with mod parts this game doesn't have no longer stops the game when the save loads.
+- **The barber** works every time, not just once.
+- **"Restart now?"** in the pause menu's graphics settings no longer freezes the game: your choices apply at the next start.
+- **Sandbox** shows the Switch character button too.
+
+### Fewer crashes
+- **Five crashes that came back again and again in player logs now carry on, as on PC.** They came from add-on car sound packs that didn't load, broken collision data, weather mods asking for clouds that don't exist, a ped model mod in a truck, and a game file read that went wrong.
+- **The game no longer stops after its graphics are rebuilt**, for example after a window size change on Mac or when a TV connects.
+- **When the game must stop, it says why**: damaged or unreadable game files (with the file's name), a car layout mod, too many add-on cars, or a mod made for another game version. Where a mod caused it, it offers to start without that mod.
+
+### Controls
+- **Controller buttons**: an optional touch scheme with every Xbox button on screen (two sticks, A B X Y, bumpers, triggers, D-pad, L3, R3, View and Menu). Settings › Touch controls › Touch scheme. Each button can be moved, resized or hidden in Edit controls layout.
+- **HUD layout**: move the character switch wheel, the FPS counter, the phone, notifications, subtitles, names, the stats, the minimap and help messages. Settings › Touch controls › HUD layout. Out of the box they no longer sit on top of touch buttons.
+- **"Fire, left hand"**, the button that shows while you aim, can now be moved in Edit controls layout.
+- **With a controller**, Settings and Mods stay on screen while the rest of the touch controls hide.
+- **120 Hz screens** now get a fixed refresh rate for each frame rate setting, also when you play with a controller and don't touch the screen.
+
+### Mods
+- **The newest desktop Menyoo works.** It needs Microsoft's C and C++ runtime, which the app now provides to script mods, so other mods built the same way work too. While a mod starts up (Menyoo reads its lists for about 10 seconds), the game says "Loading Menyoo…".
+- **Mod keys**: Settings › Mods lists the keys each script mod uses. You can give a mod's key another key, and add your own **on-screen buttons** for mod keys (show them always, in any vehicle, or in one car). Pick an icon from every system icon, about 7,000, with search. The buttons work with the Controller buttons scheme too.
+
+### Memory and performance
+- **4 GB iPhones** (iPhone 11, 12, 13, 13 mini): about 75 MB more for the city, and Ultra Performance drops one more detail level from the biggest textures. On our recorded drive at a 4 GB iPhone's limit, the time the game spent struggling to keep textures loaded fell from about 70% to about 14%, with the same FPS.
+- **Cheaper thread wake-ups** in the engine, and the recommended presets now limit heat on the iPhone 12 Pro and 12 Pro Max. In the built-in benchmark on an iPhone 13 Pro Max, v1.5 held its 30 FPS limit where v1.4.7 averaged 25.
+
+### Devices
+- **iPhone Duo**: the game fills the inner screen, and folding or unfolding while you play keeps the game going. The controls stay within thumb reach on the inner screen.
+- **Built with Xcode 27** (the iOS 27 SDK). iOS 16 is still supported.
+- **Stretched clothing**: a spike that stuck out of one gang jacket is gone.
+
+### Bug reports and ideas
+- **[fivestarport.site/report](https://fivestarport.site/report/)**: report a bug or suggest an idea in any language. It finds the same report if it's already known, so yours counts on it, and you can vote on what gets fixed next and follow your report until it's fixed. After Settings › This device › Send log to the developer, the app offers to open it with your log attached.
+
+### Languages
+- **New community translations** from the Translate page: Bulgarian by g_m1sh3vvw_ and Turkish by Efe Tokdemir (both new), more Arabic by @uk9_v and hoSAM, more Uzbek, and a Latin American Spanish fix by Hot.
+
+Other bug fixes and improvements.
+
+## v1.4.7
+
+The same version for iPhone and Mac.
+
+### Missions
+- **Eye in the Sky**: the helicopter camera now aims and zooms. The mission reads the camera from the "scaled look" controls, which stayed at zero in this port, so the camera didn't move on touch or controller. They now follow the normal look controls. On touch, drag on the right side to aim and use the left side to zoom; on a controller, the right stick aims and the left stick zooms.
+
+### Languages
+- **Simplified Chinese** no longer crashes at every load. This game build's Simplified Chinese text files make the game stop while loading, so with Simplified Chinese picked, the game's own text shows in Traditional Chinese for now. The app's menus stay in Simplified Chinese.
+- **New community translations** from the Translate page: Ukrainian by @waven and Filipino by Ricjayson (both new), and more Arabic by @uk9_v.
+
+### Graphics
+- **Changing the resolution during play no longer crashes on iPhone and iPad.** The change now applies the next time you start the game, and Settings says so. On Mac it still applies right away.
+
+### Mods
+- **Script mods that need more than a frame keep running.** The ASI interpreter stopped any script mod that ran longer than one frame without waiting, which is what Menyoo does while it starts. Such a mod now continues over the next frames; one that never waits is still stopped after a long while. Tested with an iOS build of Menyoo.
+- **Mods still packed in the Mods folder** (.zip, .rar, .oiv) are listed in Settings › Mods under "Still packed in the Mods folder". The game can't use a packed mod; tap one to install it. A .7z is listed too, but the app can't open 7z yet: unpack it first, then install the files.
+
+### Heat and performance
+- **Less work per frame.** The game's frame limiter used to spin on the CPU for the last 1-2 ms of every frame, waiting for its time. It now sleeps that stretch instead, with the same frame pacing: in the simulator the render thread used about 40% less CPU.
+- **Logs show where the CPU goes.** The log now lists the CPU each part of the game uses (every 10 s), and every 5 minutes the functions the busiest threads spend their time in. Sending a log after a long session helps cut more heat in future updates.
+
+### Updates
+- **Update popups work again.** The app asked GitHub for new versions, and GitHub is gone. It now asks fivestarport.site, so from this version on, a popup tells you when the next update is out.
+
+Other bug fixes and improvements.
+
 ## v1.4.6
 
 A quick update for iPhone and Mac.
@@ -192,7 +301,7 @@ Thanks to @abtastic-hub for the reports behind the trailer, Handler, Chop and en
 - **New button icons** for every touch button.
 - **A "Loading…" note** shows during long loads after a death or between story scenes, so they don't look like a freeze.
 
-Thanks to @k49kg9xmsd-prog, @abtastic-hub, @mmts7hrnb5-jpg and @Blue7366 for the issues behind these fixes (#3, #15, #16, #19), and to everyone in the Telegram group who sent logs and screenshots.
+Thanks to @k49kg9xmsd-prog, @abtastic-hub, @mmts7hrnb5-jpg, @Blue7366 and @sonubhutani1979-afk for the issues behind these fixes (#3, #15, #16, #18, #19), and to everyone in the Telegram group who sent logs and screenshots.
 
 ## v1.3.4
 - **Story money no longer resets to $0.** Right after a save loaded, a game script set every character's cash to $0, so each save after that kept $0. The app now ignores that one write while a save loads (#10). Saves made after the bug already hold $0, so money lost before this update doesn't come back.
@@ -209,7 +318,7 @@ Thanks to @k49kg9xmsd-prog, @abtastic-hub, @mmts7hrnb5-jpg and @Blue7366 for the
 - **Audio uses a little less CPU:** the game's music and speech are decoded natively.
 - **Extra memory is asked for by default** by the Mac script; use `--free` for a free Apple ID.
 
-Thanks to @m1337v for the airplane right stick and the file read fix (#12, #13), and to @aliiscoding2122 and @k49kg9xmsd-prog for the issues behind the money fix and the pause (#10, #11).
+Thanks to @m1337v for the airplane right stick and the file read fix (#12, #13), and to @aliiscoding2122, @k49kg9xmsd-prog and @phakamaec for the issues behind the money fix, the pause and the version fix (#10, #11, #14).
 
 ## v1.3.3
 - **Runs on iOS 16.** The app now installs on iOS 16 as well as iOS 17 and later.

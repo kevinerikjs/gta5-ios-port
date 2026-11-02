@@ -16,7 +16,7 @@ The app loads PC mods for GTA V as they are downloaded (from gta5-mods.com, for 
 | Script Hook V scripts (`.asi`), trainers | Yes | Simple Trainer and similar; see [Scripts](#scripts-asi) |
 | ScriptHookVDotNet scripts (C# `.dll` in a `scripts` folder) | No | Not supported |
 | RAGE Plugin Hook plugins, like LSPDFR (LSPD First Response) | No | They need RAGE Plugin Hook's PC launcher and .NET |
-| ASI files that patch the PC game (packfile or heap limit adjusters, OpenIV.asi, gameconfig fixes) | Not needed | The port handles those limits itself. They load but do nothing |
+| ASI files that patch the PC game (packfile or heap limit adjusters, OpenIV.asi, gameconfig fixes) | Not needed | The port handles most of those limits itself; they load but do nothing. One limit it doesn't raise yet is the number of game archives: very large map packs such as MapFixes (379 archives) stop the game while it loads ("An add-on pack doesn't fit this game") |
 | Replacing files inside an archive that is inside another archive (for example a car in a DLC pack's `vehicles.rpf`) | Not yet | The log says which file was skipped |
 | Adding a brand-new file to one of the game's archives | Not yet | Replacing existing files works. Add-on packs bring their own archive and work |
 
@@ -115,6 +115,8 @@ Script Hook V scripts are Windows files. The app runs them in a built-in interpr
 - Put the `.asi` file and its settings (`.ini`) at the top of the Mods folder, for example `Mods/TrainerV.asi` and `Mods/trainerv.ini`.
 - You don't need `ScriptHookV.dll`, `dinput8.dll` or an ASI loader. If they're in the folder, they're ignored.
 - **Keys:** PC scripts use the keyboard. While a script mod runs, a **🧩 Mods** button shows in the touch controls (top row, next to Settings). It lists the keys your mods use, with the key that opens the menu first, learned from the mod or read from its settings (Simple Trainer: F3 opens the menu; if nothing shows, press F4, which shows or hides it). While a mod's menu is open, a D-pad appears to move through it, and Enter selects.
+- **Mod keys and your own buttons** (from v1.5): Settings › Mods › a script mod lists the keys it uses. Give a key another key if two mods clash, or add an **on-screen button** for a key: pick when it shows (always, in any vehicle, or in one car) and an icon (**All icons…** has every system icon, with search). Move and resize the buttons in Edit controls layout. They also show with the Controller buttons touch scheme.
+- **Desktop Menyoo** (from v1.5): the newest desktop build runs, as does Menyoo for iOS. Its first start takes about 10 seconds, while the game shows "Loading Menyoo…". Then F8 opens the menu.
 - **Typing:** tap **Type** in the 🧩 Mods keys to send the iPhone keyboard to the mod (spawn a car by name, a search box); **Done** sends it. When a script asks with the game's own text box, the same keyboard opens by itself.
 - Controller shortcuts work through the touch controls and Bluetooth controllers too (Simple Trainer: RB + X opens the menu, D-pad and A/B to move around). A keyboard connected to an iPad works as well.
 - Features that change the PC game's memory directly (some trainer options) stay off. The rest of the script keeps working.

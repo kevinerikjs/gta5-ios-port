@@ -21,15 +21,15 @@ The same answers the helper bot gives in [Five Star Port on Telegram](https://t.
 
 ### SideStore or AltStore won't sign in with my Apple ID (error -80045, stuck on anisette). How do I fix it?
 
-Errors like -80045, "bad credentials" or a sign-in stuck at anisette come from Apple's servers or the sideloader, not from the app. Players had luck with: waiting a few hours, updating SideStore/AltStore to the newest version, switching the anisette server, and signing in again with a fresh two-factor code. Ask in the Install topic with the exact error if it keeps failing.
+Errors like -80045, "bad credentials" or a sign-in stuck at anisette come from Apple's servers or the sideloader, not from the app. Check these first: LocalDevVPN (App Store) is installed, opened and connected (VPN icon at the top); no other VPN app is on, since only one VPN runs at a time; and no anti-revoke DNS profile is installed, as it can block Apple's servers. If SideStore says the pairing file is missing or invalid, make a new one on a computer as SideStore's guide shows and import it. Then update SideStore (players had luck with the nightly), switch the anisette server and sign in again with a fresh two-factor code. When Apple refuses everyone, waiting a few hours helps. Ask in the Install topic with the exact error if it keeps failing.
 
 ### Where do I download the IPA, including the latest version?
 
-The newest ready-made IPA is posted in the Releases topic of the Telegram group. With a Mac you can also build it yourself (see the GitHub README). It's not on the App Store, and IPAs from other places can be old or modified.
+The newest IPA is posted in the Releases topic of the Telegram group (https://t.me/fivestarport/786): join the group, the newest post there is the newest version, the iPhone IPA and the Mac zip together. It's not on the App Store, and IPAs from other places can be old or modified.
 
 ### How do I install the game, and where do I start?
 
-Start with the setup guide in the Start here topic of the Telegram group, or the GitHub README's "Install in 4 steps". In short: 1) install a sideloader (SideStore or AltStore, set up once with a computer); 2) get the IPA from the Releases topic; 3) install it; 4) for extra memory, install with AltStore 2.3 or newer (it adds it by itself); 5) add your own game files in the app; 6) pick Story mode or Sandbox and tap Play.
+Start with the setup guide in the Start here topic of the Telegram group, or the install guide at fivestarport.site/iphone/. In short: 1) install a sideloader (SideStore or AltStore, set up once with a computer); 2) get the IPA from the Releases topic (https://t.me/fivestarport/786); 3) install it; 4) for extra memory, install with AltStore 2.3 or newer (it adds it by itself), GetMoreRam with SideStore works for some players, but its Apple sign-in fails for many since mid-October; 5) add your own game files in the app; 6) pick Story mode or Sandbox and tap Play.
 
 ### Is there a video tutorial or setup guide?
 
@@ -41,11 +41,11 @@ Any of SideStore, AltStore or Sideloadly works: one IPA works with all of them s
 
 ### Can it run inside LiveContainer, and where do I get LiveContainer?
 
-It isn't officially tested in LiveContainer, but players run it there. Inside LiveContainer the app gets LiveContainer's memory limit, and the folder picker can't open your game folder until two of LiveContainer's fixes are on: in LiveContainer, open GTA V Port's settings and under Fixes turn on Fix File Picker and Use LiveContainer's Bundle ID. Then Game files › Choose a folder… works, also for a game folder kept from an earlier version (since v1.4.5 the app shows this tip when it runs inside LiveContainer). Installing with SideStore, AltStore or Sideloadly is the supported way.
+It isn't officially tested in LiveContainer, but players run it there. Inside LiveContainer the app gets LiveContainer's memory limit, and the app's folder is inside LiveContainer's own folder in Files, not directly in On My iPhone: tap Game files › Open the GTA V Port folder and it opens the right one, then move your game folder or its .zip/.rar there. Installing with SideStore, AltStore or Sideloadly is the supported way.
 
 ### How do I set up SideStore, and do I need a PC for it?
 
-SideStore and AltStore need a computer once to pair with your iPhone (an Apple rule); any Mac or Windows PC works, even a friend's. After that SideStore works on the phone by itself. Follow SideStore's own setup guide.
+SideStore and AltStore need a computer once to pair with your iPhone (an Apple rule); any Mac or Windows PC works, even a friend's. After that SideStore works on the phone by itself. Follow SideStore's own setup guide. On Windows, install iTunes and iCloud from Apple's website, not the Microsoft Store versions: otherwise the computer tools can't see your iPhone.
 
 ### Which iOS versions are supported (iOS 15, 16, 17, 27), and does it work offline?
 
@@ -57,19 +57,23 @@ The supported installers are SideStore, AltStore and Sideloadly. Other signers (
 
 ### Installing the IPA fails with an error (unable to install, expired, Apple server error in ESign). What now?
 
-"Unable to install", "integrity could not be verified" or Apple server errors come from signing, not from the app. Try again later, refresh/re-sign, check that you have fewer than 3 sideloaded apps on a free Apple ID, or try another supported installer (SideStore, AltStore, Sideloadly). If your installer refuses the app because of the memory entitlements, try another installer: AltStore 2.3 or newer and Sideloadly accept them.
+"Unable to install", "integrity could not be verified" or Apple server errors come from signing, not from the app. Try again later, refresh/re-sign, check that you have fewer than 3 sideloaded apps on a free Apple ID, or try another supported installer (SideStore, AltStore, Sideloadly). If your installer refuses the app because of the memory entitlements, try another installer: AltStore 2.3 or newer and Sideloadly accept them. A free Apple ID can also register only 10 App IDs in 7 days (every app you sideload, and each retry with a new ID, uses one): if the installer says you've reached the limit, wait a few days or remove apps you don't need.
 
 ### Which certificate should I use, what does it cost, and why does it get revoked?
 
 A free Apple ID works and re-signs every 7 days. A paid Apple developer account (99 USD/year) signs for a year and gives more memory. Shared or bought certificates from third parties often get revoked, which shows as "integrity could not be verified"; the project can't help with those.
 
-### Can I build or get the IPA on a PC or Mac, and do I still need the game files on the phone?
+### Can I get the IPA on a PC or Mac, and do I still need the game files on the phone?
 
-Yes: on an Apple Silicon Mac with Xcode you can build with build_ipa.sh (see the GitHub README), or get the ready-made IPA from the Releases topic of the Telegram group. Either way the game files must be on the iPhone (or streamed from your own computer over Tailscale, the advanced route).
+You don't build anything: the app is the IPA from the Releases topic of the Telegram group, and a computer is only needed once to set up SideStore or AltStore. The game files must be on the iPhone (or streamed from your own computer over Tailscale). On a Mac there's a Mac app too: fivestarport.site/mac/.
 
-### Do I need a PC (or a Mac) to build, install or play the port?
+### Do I need a PC (or a Mac) to install or play the port?
 
-Getting the app needs no computer (the IPA is in the Releases topic), and playing needs none. Only setting up SideStore or AltStore needs a computer once (an Apple rule).
+Playing needs no computer, and the app is the IPA from the Releases topic. Only setting up SideStore or AltStore needs a computer once (an Apple rule).
+
+### Mac: how do I quit the game, and where are my saves?
+
+Quit with ⌘Q like any Mac app (the menu bar's GTA V Port › Quit; ⌃⌘F leaves fullscreen if you want the menu bar). The Mac app keeps its own files (saves, mods, logs) in its container: in Finder hold Option and choose Go › Library, then open Containers › GTA V Port › Data › Documents. Your game folder stays where you put it.
 
 ### Can I install the app with Sideloadly?
 
@@ -79,9 +83,9 @@ Yes. Since v1.3.3 the one IPA works with Sideloadly too.
 
 TrollStore works where your iPhone supports it, and gives the extra memory without GetMoreRam.
 
-### Can I use the IPA from Releases instead of building it myself, and what's the difference?
+### Can I still build the app on the website?
 
-Both work. The Releases topic has a ready-made IPA. Building it yourself with build_ipa.sh on a Mac makes the same app from your own game files.
+The website doesn't build apps any more: the IPA from the Releases topic of the Telegram group (https://t.me/fivestarport/786) is the way to get it. fivestarport.site has the install guide, the Mac guide, the FAQ and the changelog.
 
 ### Do I have to sideload again every 7 days, and can I refresh wirelessly?
 
@@ -89,7 +93,11 @@ With a free Apple ID, yes: apps must be refreshed every 7 days. SideStore refres
 
 ### Does the app need JIT?
 
-No. The engine is compiled ahead of time, so no JIT is needed.
+No. The engine is compiled into the app ahead of time and draws with Metal, so JIT isn't used: turning it on with StikDebug or another JIT tool doesn't add FPS or stability. What helps is extra memory and the right preset (Settings › Graphics).
+
+### Does the port work on an iPhone 7 (or another phone that can't update past iOS 15)?
+
+No. The app needs iOS 16 or newer, and the iPhone 7 (and older) stops at iOS 15. The oldest iPhones that can run it are the iPhone 8 and iPhone X, and with their small memory the game is very limited there.
 
 ### The app won't open after install (untrusted developer). Do I need to trust the profile, and is it safe?
 
@@ -103,15 +111,19 @@ Developer Mode shows in Settings › Privacy & Security after a sideloaded app i
 
 The supported installers are SideStore, AltStore and Sideloadly.
 
+### The app didn't tell me there's a new update. How do I find out about new versions?
+
+New versions are posted in the Releases topic (t.me/fivestarport/786). Up to v1.4.6 the app asked GitHub for new versions, and GitHub is gone, so those versions show no popup. From v1.4.7 the app asks fivestarport.site, so it tells you again when the next update is out.
+
 ## Updating
 
 ### How do I update to a new version without losing my files or progress?
 
-Install the new IPA over the old app: your game files, Story saves, Mods and settings stay (iOS keeps the app's own folder when the same app is installed again). Use the same sideloader and the same Apple ID as before (SideStore/AltStore: My Apps › + › pick the new IPA). Don't delete the app first: deleting it deletes its folder, with the game files inside it and your saves. If you install with a different sideloader or Apple ID, iOS can treat it as a different app: a second GTA V Port appears with no game files, and the old app still has them. Keep using the old one, or copy the game folder across in the Files app. Inside LiveContainer the data lives in LiveContainer's own folder: back up its data folder before reinstalling LiveContainer. Built it yourself? Build the new version the same way. Updates never need new game files.
+Install the new IPA over the old app: your game files, Story saves, Mods and settings stay (iOS keeps the app's own folder when the same app is installed again). Use the same sideloader and the same Apple ID as before (SideStore/AltStore: My Apps › + › pick the new IPA). Don't delete the app first: deleting it deletes its folder, with the game files inside it and your saves. If you install with a different sideloader or Apple ID, iOS can treat it as a different app: a second GTA V Port appears with no game files, and the old app still has them. Keep using the old one, or copy the game folder across in the Files app. Inside LiveContainer the data lives in LiveContainer's own folder: back up its data folder before reinstalling LiveContainer. Updates never need new game files.
 
 ### What's new, and when is the next update?
 
-Every version's changes are in the Releases topic and the GitHub CHANGELOG, and the app tells you when a new version is out. The newest is v1.4.3: Trackify works (The Merryweather Heist can be finished), street race result screens, the tooth in By the Book, the Handler in Scouting the Port, switching back from Chop, buttons for Detach trailer, the Cargobob hook, the docks crane and Detonate, a movable minimap that opens the full map, sound fixes, community translations and Experimental performance settings. There are no release dates for the next one.
+Every version's changes are in the Releases topic (https://t.me/fivestarport/786) and on fivestarport.site/changelog/, and the app tells you when a new version is out. The newest is v1.5, a big update: Eye in the Sky, Monkey Business, The Drag, telescopes, ATMs, garages, the barber and the Jewel Store fixed; five common crashes fixed and the stop screen says why; desktop Menyoo works; mod keys as your own on-screen buttons; the Controller buttons touch scheme and the HUD layout editor; much better 4 GB iPhones; iPhone Duo support; and the report board at fivestarport.site/report/. There are no release dates for the next one.
 
 ### Do I need to delete and download the game files again when I update or after I get GetMoreRam?
 
@@ -133,15 +145,15 @@ The project can't help with getting the game files and doesn't share them: you n
 
 ### I installed the app and downloaded the files. How do I add them so the game starts?
 
-Open the app once so its folder appears in Files. Then in the Files app long-press your unpacked game folder (the one with data and b inside), tap Move and choose On My iPhone › GTA V Port. Open the app again: it finds the game by itself and checks every file. Or use the Game files screen: Choose a folder…, Choose an archive… (zip or rar) or From a link. Then pick Story mode or Sandbox and tap Play.
+Open the app once so its folder appears in Files. Then in the Files app touch and hold your unpacked game folder (the one with data and b inside), or the .zip or .rar it came in, tap Move and choose On My iPhone › GTA V Port. Open the app again: it finds the game by itself and checks every file; an archive gets an Unpack button. Since v1.5.2 Game files › Show me how walks you through it with pictures. Or paste a download link under From a link. Then pick Story mode or Sandbox and tap Play.
 
 ### Pressing Open in the folder picker does nothing, so the app won't take my game files. How do I fix it?
 
-On many sideloaded installs iOS doesn't hand a picked folder to the app (Open stays grey or seems to do nothing; sometimes it slowly copies the whole folder). In LiveContainer: open GTA V Port's settings in LiveContainer and under Fixes turn on Fix File Picker and Use LiveContainer's Bundle ID, then pick the folder again. Otherwise the Game files screen has Open GTA V Port in Files: it opens the app's own folder in Files; move your game folder there (touch and hold › Move) and come back, the app finds it by itself. Or download the game files in the app (From a link) or pick a zip/rar with Choose an archive….
+Since v1.5.2 the iPhone app has no folder or archive picker any more: on many sideloaded installs iOS never handed the picked folder over (Open stayed grey or did nothing). Put the game in the app's own folder instead: Game files › Open the GTA V Port folder opens it in Files; move your game folder, or its .zip or .rar, there (touch and hold › Move) and come back, the app finds it by itself. Game files › Show me how shows each step. Or download the game in the app with From a link. A folder you picked in an earlier version keeps working.
 
 ### Which game files do I need to download and add, and does the archive contain everything?
 
-The app needs the whole unpacked web build (version 8b0b5899ed): the folder that has data and b inside, about 21 GB. The app checks every file and tells you exactly what's missing or damaged.
+The app needs the whole unpacked web build (version 8b0b5899ed): the folder that has data and b inside, about 21 GB. Put it in Files › On My iPhone › GTA V Port (or pick it in the app's Game files screen). The app checks every file and tells you exactly what's missing or damaged.
 
 ### Which version of the game files is the best or most stable (mirror, gta5webport.zip, 19 GB, 21 GB)?
 
@@ -153,15 +165,15 @@ Saves are in Files › On My iPhone › GTA V Port › EngineFiles › userdata 
 
 ### The download links won't open, or the download won't start. How do I fix it?
 
-The project can't help with third-party download sites. If you have a link to your own copy: in the app's Game files screen paste it under From a link; a download page opens in the app's own browser, which takes the download over (it has a shield button to turn off ad blocking for a site that refuses). Or download it another way and pick it with Choose an archive….
+The project can't help with third-party download sites. If you have a link to your own copy: in the app's Game files screen paste it under From a link; a download page opens in the app's own browser, which takes the download over (it has a shield button to turn off ad blocking for a site that refuses). Or download it another way and move the .zip or .rar into Files › On My iPhone › GTA V Port: the app offers to unpack it.
 
 ### The download stops, restarts from zero, or ends up incomplete. How do I get it to finish?
 
-When downloading in the app (From a link), keep the app open: in the background the download pauses and continues when you come back. Since v1.4.2 a dropped connection is retried for 30 minutes, and if the app was closed, Game files shows "The download stopped at N%" with Continue the download, which picks up where it stopped instead of starting again. Zip and normal (not solid, not split) RAR5 archives continue in the middle; with other archives, files already unpacked aren't unpacked again. Keep about 21 GB free. If you downloaded it elsewhere, a much too small file means it didn't finish.
+When downloading in the app (From a link), keep the app open in front: it keeps the screen from locking while it works, so don't press the side button or switch apps. In the background the download pauses and continues when you come back. Since v1.4.2 a dropped connection is retried for 30 minutes, and if the app was closed, Game files shows "The download stopped at N%" with Continue the download, which picks up where it stopped instead of starting again. Zip and normal (not solid, not split) RAR5 archives continue in the middle; with other archives, files already unpacked aren't unpacked again. Keep about 21 GB free. If you downloaded it elsewhere, a much too small file means it didn't finish.
 
 ### Can I rename the RAR file to ZIP, and which app should I use to unpack it?
 
-Don't rename .rar to .zip, that breaks it. No unzip app is needed: pick the .rar with Game files › Choose an archive… and the app unpacks it.
+Don't rename .rar to .zip, that breaks it. No unzip app is needed: move the .rar into Files › On My iPhone › GTA V Port, open the app and tap Unpack (Game files › Show me how shows the steps).
 
 ### How much storage do the game files need, and how should I get them onto the phone?
 
@@ -169,7 +181,7 @@ The game is about 21 GB, plus the app. Keep about 30 GB free. Unpacking in the a
 
 ### The game files archive won't unpack (corrupted, wrong password, unsupported format). What do I do?
 
-Use the app itself: Game files › Choose an archive… unpacks zip and rar (also multi-part) and checks every file. "Corrupted" or "wrong password" usually means the archive didn't download completely; get it again.
+Let the app do it: move the zip or rar (all parts of a multi-part one) into Files › On My iPhone › GTA V Port and tap Unpack in Game files; it unpacks and checks every file. "Corrupted" or "wrong password" usually means the archive didn't download completely; get it again.
 
 ### Can I download a 100% save file, and do downloaded saves work?
 
@@ -181,11 +193,11 @@ No, since v1.4.2. A dropped connection is retried for 30 minutes (also while the
 
 ### The download link only sends me to ad or betting sites. How do I download?
 
-The project can't help with third-party download sites. If you use From a link in the app, a download page opens in the app's built-in browser, which blocks ads and takes the download over.
+The project can't help with third-party download sites. If you use From a link in the app, a download page opens in the app's built-in browser, which blocks ads and takes the download over. The first tap on a page's download button often opens an ad or a redirect: close it and tap the button again (sometimes 3 or 4 times) until the app shows the download starting. If the site refuses, the app turns ad blocking off for that site and asks you to tap again.
 
 ### I don't have enough space to keep the archive and also extract it. What can I do?
 
-Let the app do it: Game files › From a link or Choose an archive…. It unpacks as it goes and uses the archive up, so you need about 21 GB free, not double.
+Let the app do it: paste the link under Game files › From a link, or move the archive into Files › On My iPhone › GTA V Port and tap Unpack. It unpacks as it goes and uses the archive up, so you need about 21 GB free, not double.
 
 ### The file host says it is too busy, or the download is very slow. What can I do?
 
@@ -213,11 +225,11 @@ It comes with the game files and is optional. To free space: Files › On My iPh
 
 ### After unzipping the 14 split parts they don't become one folder. Is that right?
 
-All parts of a multi-part archive go together: pick them with Game files › Choose an archive… and the app unpacks them into one folder.
+All parts of a multi-part archive go together: move every part (.part1.rar, .part2.rar…) into Files › On My iPhone › GTA V Port and tap Unpack in Game files; the app unpacks them into one folder.
 
 ### Do I have to upload the game folder anywhere, and can I delete it afterwards?
 
-Nothing gets uploaded anywhere. Keep the game folder on the iPhone (On My iPhone › GTA V Port): the app plays from it.
+Nothing gets uploaded anywhere. Keep the game folder on the iPhone (On My iPhone › GTA V Port): the app plays from it, so don't delete it.
 
 ### If I copy all the PC files (about 65 GB) to iOS, will all the cutscenes work?
 
@@ -247,7 +259,7 @@ iOS gives an app about half of the iPhone's memory. To unlock more for free, ins
 
 ### I can't sign in to GetMoreRam or iRAM+ (bad credentials, data error). How do I fix it?
 
-GetMoreRam's Apple sign-in fails for most players since mid-October (-80045, bad credentials, bad server response). You don't need it: install GTA V Port with AltStore 2.3 or newer, which adds the extra memory by itself on a free Apple ID. Some players also report iRAM+ working with LocalDevVPN running. A paid developer account always works.
+GetMoreRam's and SideStore's Apple sign-in has been failing for many players (-80045, "request timed out", bad credentials, or the 2FA code never arrives). What worked for several players in the group: install SideStore nightly, set its anisette server to SideStore's "new" server (new · ani · sidestore · io; on-device anisette off), use "clean up keychain", reopen SideStore, keep LocalDevVPN on, then sign in again. You may not need GetMoreRam at all: AltStore 2.3 or newer adds the extra memory by itself on a free Apple ID, and a paid developer account always works. Ask in the Install topic (t.me/fivestarport/5) if it still fails.
 
 ### I tried to increase memory, but the game still shows only 2-3 GB. Why?
 
@@ -255,11 +267,15 @@ Check Settings › This device. "Extra memory: off" means your install doesn't h
 
 ### Should I enable the 'increased memory entitlement' option, and do I need to reinstall?
 
-Keep "Enable increased memory entitlements" ticked when you build (it's on by default). Since v1.3.3 there's only one IPA and it always asks for extra memory. The entitlement alone doesn't add memory: the installer has to keep it. AltStore 2.3 or newer does on a free Apple ID; SideStore currently drops it; a paid developer account or TrollStore keep it. Untick it only if your installer refuses the app.
+The IPA from the Releases topic always asks for the extra memory, so there's nothing to tick. The entitlement alone doesn't add memory: the installer has to keep it. AltStore 2.3 or newer does on a free Apple ID; with SideStore, GetMoreRam (or iRAM+) adds it once if its Apple sign-in works for you (it fails for many since mid-October); a paid developer account or TrollStore keep it. Settings › This device shows whether you have it ("Extra memory: on").
 
 ### Does a paid developer certificate give extra memory, and what do I need to enable when signing?
 
 Yes. A paid Apple developer account (99 USD/year) gives Increased Memory Limit and Extended Virtual Addressing (about 4,000 MB on a 6 GB iPhone) and re-signs once a year. The IPA already asks for both. If an IPA signed by a tool with a paid account still shows the free limit in Settings › This device, the tool dropped the entitlements; signing on a Mac with Xcode is the most reliable.
+
+### Does v1.4.6's bigger memory (up to 7 GB) help my phone? It still shows about 3 GB.
+
+v1.4.6 lets the game use more of the memory iOS already gives the app: it helps devices with 8 GB or more that have the extra memory (the app limit is then 5 to 12 GB). It can't raise what iOS allows, so if Settings › This device shows about 3 GB, the extra memory isn't on for your install (see the extra memory answers), and 4 GB iPhones don't change. Grey textures on 4 GB iPhones are a known issue being worked on.
 
 ### Which IPA should I install, normal or unlimited, and what does 'unlimited' mean?
 
@@ -281,7 +297,7 @@ No. GetMoreRam turns on Increased Memory Limit for GTA V Port's App ID in your A
 
 ### Textures, ground or buildings disappear or don't load. How do I fix it?
 
-Missing or grey ground, blurry buildings or a map that stops loading means the game ran out of room for the city. Update to the newest version: v1.4.6 gives the game much more memory on iPhones and iPads with 8 GB or more (with extra memory) and on Macs (up to 7 GB instead of 4 GB), and v1.4.5 keeps the city loaded on 4 GB iPhones (Settings › This device › Experimental, on by default). Unlock extra memory if you can (AltStore 2.3 or newer, or a paid account), use the preset marked (recommended) or lower, close other apps and keep the device cool: heat slows loading down. A red ⚠️ next to the FPS counter means your iPhone gives the game little memory, so some missing textures are expected there. If it still happens on the newest version, send a log right after it happens (Settings › This device › Send log to the developer, with a short note in "What happened?").
+Missing or grey ground, blurry buildings or a map that stops loading usually means the game is short on memory. Update to the newest version and keep the Experimental settings (Settings › This device) on. Unlock extra memory if you can (install with AltStore 2.3 or newer, or a paid account), use the preset marked (recommended) or lower and close other apps. On 3 to 4 GB iPhones far areas can still stay untextured: a known issue. If it happens on the newest version, send a log right after it happens (Settings › This device › Send log to the developer, with a short note in "What happened?").
 
 ### What FPS can I expect on my device?
 
@@ -295,9 +311,13 @@ It runs on iPhones and iPads with iOS 16 or newer. What matters most is memory: 
 
 It installs and starts, but 4 GB iPhones (iPhone XS, 11, 12, 12 mini, 13, 13 mini, SE 3rd generation) get only about 2 GB for the app, so expect low detail and around 20-30 FPS. Use the Ultra Performance preset (Settings › Graphics), made for these phones. v1.4.5 helps most: on these iPhones the city stays loaded while driving (fewer grey and missing textures) and the game gets about 80 MB more memory (Settings › This device › Experimental, on by default). The red ⚠️ next to the FPS counter marks a phone with this little memory. Unlocking extra memory helps a little.
 
+### 4 GB iPhone (iPhone 11, 12, 13): textures or houses look worse since v1.4.5 than on v1.4.4
+
+v1.5 improves 4 GB iPhones (iPhone 11, 12, 13, 13 mini) a lot: about 75 MB more memory for the city, and Ultra Performance drops one more detail level from the biggest textures, so the ground and buildings load instead of staying grey; on our test drive the struggling-to-load time fell from about 70% to 14%. Update, and keep the recommended preset (Ultra Performance) and Graphics › Textures on Low. If you prefer the older look, Settings › This device › Experimental › Lighter big textures and Steady city on low memory turn the changes off.
+
 ### How do I raise FPS or unlock 60 FPS?
 
-Unlock extra memory first. Then in Settings › Graphics: pick the recommended preset (or lower), lower the Resolution, and set Frame rate to 60 or Unlocked (up to 120 on ProMotion iPhones; 40 there too since v1.4.5). Resolution and frame rate change right away since v1.4.5. Close other apps, turn off Low Power Mode and keep the phone cool. Turn on Show FPS counter to compare.
+Unlock extra memory first. Then in Settings › Graphics: pick the recommended preset (or lower), lower the Resolution, and set Frame rate to 60 or Unlocked (up to 120 on ProMotion iPhones; 40 there too since v1.4.5). The frame rate changes right away; since v1.4.7 a Resolution change on iPhone and iPad applies the next time the game starts (on Mac right away). Close other apps, turn off Low Power Mode and keep the phone cool. Turn on Show FPS counter to compare.
 
 ### Why does the game stutter or drop FPS over time (iPhone 17, iPad, v1.3.4)?
 
@@ -309,7 +329,7 @@ Yes, since v1.4.2: Settings › Graphics, at the bottom: Textures, Shadows, Refl
 
 ### Which graphics settings give good quality and FPS?
 
-Start with the preset marked (recommended) in Settings › Graphics: the app picks it from your memory. Then raise or lower Resolution while playing to find your balance between sharpness and FPS. Presets above the recommended one show a warning but are safe to try: if one is too much, the app steps back next launch. Since v1.4.2 you can also set Textures, Shadows, Reflections, Draw distance, Grass and Traffic and people yourself under the preset (Settings › Graphics, at the bottom); they stay when you change the preset and apply when you press Play.
+Start with the preset marked (recommended) in Settings › Graphics: the app picks it from your memory. Then try a higher or lower Resolution to find your balance between sharpness and FPS (on iPhone and iPad it applies the next time the game starts, since v1.4.7). Presets above the recommended one show a warning but are safe to try: if one is too much, the app steps back next launch. Since v1.4.2 you can also set Textures, Shadows, Reflections, Draw distance, Grass and Traffic and people yourself under the preset (Settings › Graphics, at the bottom); they stay when you change the preset and apply when you press Play.
 
 ### How much RAM does it need, and does more RAM increase FPS?
 
@@ -329,7 +349,7 @@ Settings › Graphics › Frame rate › Unlocked goes up to 120 on ProMotion iP
 
 ### I changed the graphics preset or frame rate but nothing changes in the game
 
-The graphics preset applies when the game starts. If you change it while playing, Settings shows "Restart needed": close the app completely (swipe it away in the app switcher), open it again and press Play. The resolution changes right away, and since v1.4.5 the frame rate does too.
+The graphics preset applies when the game starts. If you change it while playing, Settings shows "Restart needed": close the app completely (swipe it away in the app switcher), open it again and press Play. Since v1.4.7 the same goes for the Resolution on iPhone and iPad (changing it during play could crash the game); on Mac it changes right away. The frame rate changes right away since v1.4.5.
 
 ### I have an 8 GB iPhone or iPad (or extra memory) and still get grey ground or missing textures while driving. Why?
 
@@ -337,11 +357,15 @@ Up to v1.4.5 the game engine kept its data in a 4 GB block, and on 8 GB devices 
 
 ### The phone gets very hot. Is that normal?
 
-Yes, the phone gets warm. Use Settings › Graphics › Steady frame rate when hot, a 30 FPS cap, lower resolution, and play without a case and not while charging.
+Yes, almost every iPhone gets warm with a game this big: in play stats 8-9 of 10 sessions on most iPhones get hot enough that iOS slows the chip (about half on the iPhone 17 family, rarely on M-chip iPads and Macs). What helps most: Frame rate 30 (Settings › Graphics), Steady frame rate when hot, a step down in preset, no case and not charging while playing. The iPhone 12 Pro and 12 Pro Max run hottest: on Battery or Performance the 12 Pro Max gets very hot in half of all sessions, on Ultra Performance in 1 of 5, and it runs smoother there too, so use Ultra Performance on the 12 Pro Max and at most Battery on the 12 Pro. fivestarport.site/performance/ has a table for every iPhone.
 
 ### What are the Experimental settings in Settings › This device?
 
 Three settings added in v1.4.3, all on by default: Smarter texture loading keeps the ground and roads from turning grey after long play; Lighter big textures uses a quarter of the memory for the largest textures on iPhones before the 15 Pro, so more of the world stays sharp; Faster engine threads keeps the engine on the fast processor cores for steadier FPS. Turn one off if it causes trouble: Faster engine threads if your iPhone gets too hot, Smarter texture loading if the game runs out of memory, Lighter big textures for the sharpest close-ups.
+
+### How well does the game run on my iPhone? What FPS and settings should I expect?
+
+Every iPhone runs a steady 30 FPS at the default frame rate. Set higher, players average: XS/11/12/13 and SE 40-49 FPS on Ultra Performance (about 2 GB for the game, so some grey ground while driving fast); 12 Pro and 12 Pro Max 42-44 (they run hottest: Ultra Performance on the 12 Pro Max, Battery on the 12 Pro); 13 Pro to 15 Plus 45-51 (Battery, or Performance/Balanced with extra memory); 15 Pro to 16 Pro Max 41-49 (Battery, or Quality with extra memory); 17 family and Air 48-53; M-chip iPads and Macs 52-63. The preset marked (recommended) in Settings › Graphics follows your memory; extra memory (AltStore 2.3, GetMoreRam or a paid account) lets you go higher. Full table: fivestarport.site/performance/
 
 ### The pause menu keeps saying "You made changes but did not apply them" though I changed nothing. What do I press?
 
@@ -355,23 +379,31 @@ On iPhones with a 120 Hz screen (ProMotion), Settings › Graphics › Frame rat
 
 It means iOS gives the game little memory on your iPhone (the 4 GB models get about 2 GB), so a less detailed city and textures that load late or stay missing are expected there. It's there so a screenshot shows it at once; nothing is broken. Unlocking extra memory (AltStore 2.3 or newer, or a paid account) helps the most.
 
+### Why do car textures look low quality or blurry up close?
+
+It's the texture setting, not a bug. The presets up to Balanced use Textures: Low, which keeps memory free for the city. For sharper cars, open Settings › Graphics and set Textures to Normal or High at the bottom, if your device has the memory (6 GB or more, or extra memory). It applies at the next Play. If the ground starts turning grey while driving, go back one step. The game files the port uses have no PC HD car textures, so cars never reach the PC's HD look up close. Some old cars in the game, like the rusty Emperor, really have a broken dashboard.
+
 ## Controls
 
 ### Does the game work with a controller?
 
-Yes. Bluetooth controllers work, and the touch controls hide while one is connected (Settings › Controls › Hide touch controls with a controller). Since v1.4.2, hold the controller's View / Share button for a second to open Settings (a tap still changes the camera view). Keyboard and mouse work too (Settings › Controls › Keyboard and mouse).
+Yes. Bluetooth controllers work, and the touch controls hide while one is connected (Settings › Controls › Hide touch controls with a controller); since v1.5 Settings and Mods stay on screen. Hold the controller's View / Share button for a second to open Settings (a tap still changes the camera view). Keyboard and mouse work too. No controller? Since v1.5, Settings › Touch controls › Touch scheme › Controller buttons puts every Xbox button on screen (L3 and R3 are their own buttons).
 
 ### How do I switch characters?
 
-In Story mode use the Switch character button on the touch controls, then drag to the character on the wheel. It works in helicopters and planes too, and while playing as Chop the button shows whenever the game waits for the switch back to Franklin (v1.4.3). With a controller it's the game's usual D-pad down.
+Use the Switch character button on the touch controls, then drag to the character on the wheel; since v1.5 it shows in Sandbox too, not only in Story mode. It works in helicopters and planes, and while playing as Chop it shows whenever the game waits for the switch back to Franklin. With a controller it's the game's usual D-pad down. You can move the wheel itself in Settings › Touch controls › HUD layout (v1.5).
 
 ### Can I move, edit or hide the on-screen buttons?
 
-Yes: Edit controls layout (start screen or Settings › Controls). Drag a button to move it, pinch to resize, or hide it. Button size and opacity are in Settings › Controls too.
+Yes: Edit controls layout (start screen or Settings › Controls). Drag a button to move it, pinch to resize, or hide it; since v1.5 that includes the "Fire, left hand" button that shows while you aim. Button size and opacity are in Settings › Controls. Since v1.5, Settings › Touch controls › HUD layout also moves the HUD: the minimap, the FPS counter, the character wheel, the phone, notifications, subtitles, names, the stats and help messages. Prefer a fixed layout with every Xbox button? Touch scheme › Controller buttons (v1.5).
 
 ### Can I change the camera sensitivity, or move the camera by dragging on the screen?
 
 Settings › Touch controls: pick Camera: right stick or Camera: swipe at the top, then set the speed or sensitivity (swipe up to 15x). Gyro aiming is there too.
+
+### Can I move the FPS counter, the minimap, the phone or the character switch wheel?
+
+Yes, since v1.5: Settings › Touch controls › HUD layout. Drag a piece to move it, pinch the minimap or the character wheel to resize, and Reset puts one back. It moves the character wheel, the FPS counter, the phone, notifications, subtitles, vehicle and area names, the wanted level and cash (sideways only), the minimap and help messages. Some apply at once, the rest at the next start, as the screen says.
 
 ### Can I steer with left and right buttons instead of the joystick?
 
@@ -421,6 +453,10 @@ Hold the Sprint button to open a parachute (Settings › Controls › Sprint but
 
 Since v1.4.3, tap the minimap to open the full-screen map; pinch to zoom it. The map is also the first tab of the pause menu (the Pause button). Drag on the left of the screen to move the cursor and set a waypoint.
 
+### Since v1.5 my driving buttons turned into arrows, a check mark, back and skip, with no menu on screen. How do I fix it?
+
+Fixed in v1.5.1: update. On v1.5 some script mods (.asi files) read the menu arrows every frame, even with their own menu closed. The touch controls took that for an open menu and swapped the play buttons for the menu ones. v1.5.1 no longer counts mods for that check; ATM screens and an open mod menu such as Menyoo still get the arrows. Still on v1.5? Remove script mods one at a time in Settings › Mods until the play buttons come back.
+
 ### The touch buttons disappeared. How do I get them back?
 
 The touch controls hide while a game controller is connected, or a keyboard and mouse with Keyboard and mouse on, and come back when it disconnects. Turn off Bluetooth or the controller, or switch off Settings › Touch controls › Hide when a controller is connected. If you moved or resized buttons, Settings › Touch controls › Edit controls layout › Reset puts them back.
@@ -441,6 +477,10 @@ Yes: Settings › Controls › Keyboard and mouse (WASD, mouse look). With both 
 
 Since v1.4.5 bicycles have a Jump button where cars have drive-by. Hold it longer to hop higher.
 
+### I opened an ATM and can't close it with the touch controls. How do I leave?
+
+Fixed in v1.5: update. With touch controls the ATM screen now shows Back and the menu arrows after a few seconds; Back closes it. On older versions only a controller's B closes it, or leave the app and come back.
+
 ### The help box ("Press … to …") covers the map. Can I move it?
 
 Yes, since v1.4.5: Settings › Touch controls › Help messages: Top left (the game's place), Top right, Bottom middle, or Custom, where you drag the box anywhere. With the map at the top, Top right is the default. It applies the next time the game starts.
@@ -458,6 +498,10 @@ Yes, Story mode is the full campaign with saves, and players are playing through
 ### Does story progress save, and how do I save?
 
 Yes. Story mode saves the way GTA V does: it autosaves after missions, and you can save in a safehouse bed or with Quick Save on the in-game phone. Saves stay on this iPhone between launches (Sandbox keeps its own separate files). Save after using Set money to keep it.
+
+### Eye in the Sky: I can't move the helicopter camera to scan the target, so the mission fails
+
+Update to v1.5. The camera moves since v1.4.7 (touch: drag on the right side to aim, use the left side to zoom; controller: right stick aims, left stick zooms). v1.5 fixes the rest: the RT scan button stays on screen while you hold it on a target, so the scan finishes, and in the helicopter the Interact button (the hand) turns on thermal vision, so the mission goes on. If it still gets stuck on v1.5, send a log right after it happens.
 
 ### The map or minimap doesn't show (roads, or the whole map). Why?
 
@@ -507,6 +551,10 @@ Fixed in v1.3.1. A few labels in the shop may be blank.
 
 Story missions start at the letter markers on the map (M, F, T and others). Drive to one to start it. Open the pause map to find them.
 
+### I paid $1 at a beach or pier telescope (binoculars) but can't look through it. Why?
+
+Fixed in v1.5: update. The game's own animation placed your character beside the telescope, so the view never opened and the game gave control back after taking the $1. On v1.5 you stand at the eyepiece and the view opens; drag on the right side to look around and use the left side to zoom.
+
 ### In the Chop mission I switched to Chop and can't switch back to Franklin. How?
 
 Since v1.4.2 the Switch character button stays on screen while you're Chop: tap it to switch back to Franklin. On older versions tap the down arrow (D-pad down), which is the game's switch input.
@@ -517,7 +565,7 @@ Yes, the game has its own changing weather, rain included. While playing you can
 
 ### Monkey Business: how do I dive, cut the pipe, or detach the crate from the Cargobob on touch?
 
-Monkey Business works on touch since v1.4.3. Dive: push the left stick forward and look down with the camera. Cutting tool: hold the RT button that appears and move it with the stick. At the end Trevor flies the Cargobob to the airfield: "Press … to detach the crate" is the Release tow hook button (the hook icon) that shows in any Cargobob since v1.4.3. Update if you don't see it.
+Monkey Business works on touch. Dive: since v1.5 a Y button shows when the mission waits for you to dive; tap it. Underwater, push the left stick forward and look down with the camera. Cutting tool: hold the RT button that appears and move it with the stick. At the end Trevor flies the Cargobob to the airfield: "Press … to detach the crate" is the Release tow hook button (the hook icon). Update to v1.5 if you don't see the Y button.
 
 ### No button for "Press → to pick up a container" (docks crane) or "Detonate the explosives". How do I do it?
 
@@ -553,6 +601,10 @@ Since v1.4.5, when a mission's help asks for the D-pad, the matching on-screen b
 
 Fixed in v1.4.2: the app gives the game room for 1500 vehicle handling entries instead of 560, so several add-on cars fit without editing gameconfig.xml. Update the app (install over the old one). If it still says Pool Full with a different pool name, send a log right after (Settings › This device › Send log to the developer) and say which mods you installed.
 
+### The mod installer leaves my car or skin files out ("no file with this name in the game"). What do I do?
+
+Replacement mods work by file name: each file must have the exact name of the game file it replaces (like adder.yft or player_one.ydd). Files the mod's author renamed (a name or prefix added) or that a second download renamed ("adder (1).yft") aren't found, so the installer leaves them out with "no file with this name in the game". Check the mod page for which game files to replace, rename the files to match, and install again. "Unknown until the game has run once" means: start the game once, then install. Add-on cars are different: each keeps its own dlc.rpf (see the add-on cars answer).
+
 ### Debug text appeared on my screen (#Scripts, Active Trackers, Box Modifier, OVER BUDGET, or small blue labels like runVendingMachine). How do I get rid of it?
 
 That's the game's own developer debug text, not a mod's menu. This game build had a developer shortcut: the B key turned it on while a script mod had switched the keyboard out of game mode. Since v1.4.6 B no longer does that, so update. On older versions, close the game completely and start it again: it's always off at start.
@@ -579,6 +631,10 @@ Yes, since v1.4.1 PC mods work as downloaded: car and character replacements, ad
 
 Right now the port is Story mode and Sandbox only, with no online play. Online play is planned for v2, the next major update; there's no date yet.
 
+### I can't change clothes or get a haircut, or doing so crashes the game. Why?
+
+Changing clothes works in Story mode, and shop menus like the barber and Los Santos Customs have arrows on the touch controls. The barber working only once (then the chair did nothing) is fixed in v1.5: update. If a shop menu still doesn't open on v1.5, send a log right after it happens (Settings › This device › Send log to the developer).
+
 ### Can the blank app icon be changed?
 
 Current versions have the GTA V Port icon. Changing it isn't an app option.
@@ -591,6 +647,10 @@ Yes. Since v1.4.2, Settings › Cheats has a vehicle spawner (search any vehicle
 
 Choose Sandbox on the start screen, then the Sandbox map: GTA VI test map (the test level that comes with the game files). If your files don't include it, the button is greyed out. The crash soon after loading it was fixed in v1.4; update if it still happens.
 
+### Menyoo (or another big trainer) doesn't open, F8 does nothing
+
+Since v1.5 the newest desktop Menyoo (about 4.4 MB) runs too, like other script mods built with Microsoft's C++ runtime: install it with Settings › Mods › Install a mod…, start the game, tap 🧩 Mods and press F8. Its first start takes a little while as it reads its lists. The community Menyoo-iOS build and Simple Trainer (F3) still work. If Menyoo doesn't open on v1.5, send a log right after trying.
+
 ### Can cars be tuned or modified?
 
 In Story mode, Los Santos Customs works (since v1.3.1). Sandbox has no tuning menu.
@@ -601,7 +661,7 @@ Many engines sound faint or all the same because the common web game files have 
 
 ### Does it run on macOS, and how does it perform there?
 
-Yes, on Apple Silicon Macs (M1 or newer, macOS 13 or later). It's the same app built for the Mac and runs natively, no emulator: an M4 with 16 GB plays Quality at about 80 FPS. Download GTA5Port-mac zip from the Releases topic (t.me/fivestarport/786), or build it yourself on your Mac. Setup: https://github.com/kevinerikjs/gta5-macos-port/blob/main/docs/MAC.md
+Yes, on Apple Silicon Macs (M1 or newer, macOS 13 or later). It's the same app built for the Mac and runs natively, no emulator: an M4 with 16 GB plays Quality at about 80 FPS. Download the GTA5Port-mac zip from the Releases topic (t.me/fivestarport/786). Setup: fivestarport.site/mac/
 
 ### Can AirPlay or external display support be added?
 
@@ -617,7 +677,7 @@ Yes, since v1.4.5: Self Radio plays your own songs on the car radio, as on PC. A
 
 ### Can the app be in my language, and can I translate it?
 
-The app's own text comes in English, the 12 other languages GTA V itself has, and community translations: Vietnamese and Arabic so far, partly translated (pick it in Settings › Language). Anyone can add another language or finish one on the Translate page (fivestarport.site/translate/): translate line by line and tap Send. New languages show up in the language picker from the next release. Lines not translated yet stay in English, and in a language Rockstar didn't make, the game's own text stays English.
+The app's own text comes in English, the 12 other languages GTA V itself has, and community translations: Vietnamese, Arabic, Uzbek, Ukrainian and Filipino so far (pick one in Settings › Language). Anyone can add another language or finish one on the Translate page (fivestarport.site/translate/): translate line by line and tap Send. New languages show up in the language picker from the next release. Lines not translated yet stay in English, and in a language Rockstar didn't make, the game's own text stays English.
 
 ### Can the in-game phone be replaced with an LB Phone-style phone like in FiveM?
 
@@ -653,11 +713,11 @@ No. ScriptHookVDotNet scripts (a "scripts" folder with .dll, .cs or .vb files; t
 
 ### How do I install a mod on iPhone?
 
-Download the mod on your iPhone (Safari saves it to Files › Downloads), then in the app go to Settings › Mods › Install a mod… and pick the file as downloaded (zip, rar, oiv or asi; 7z isn't supported yet, unpack it first). The app works out where each file goes and shows you before installing, including anything it leaves out and why. Start the game once before installing loose car or skin files: the game records where its files live while it runs. Settings › Mods lists installed mods: switch them off/on or swipe to remove. Cars, skins and add-ons need the game files on the iPhone.
+Download the mod on your iPhone (Safari saves it to Files › Downloads), then in the app go to Settings › Mods › Install a mod… and pick the file as downloaded (zip, rar, oiv or asi; 7z isn't supported yet, unpack it first). The app works out where each file goes and shows you before installing, including anything it leaves out and why. Since v1.4.7, archives left packed in the Mods folder show in Settings › Mods under "Still packed in the Mods folder": tap one to install it. Start the game once before installing loose car or skin files: the game records where its files live while it runs. Settings › Mods lists installed mods: switch them off/on or swipe to remove. Cars, skins and add-ons need the game files on the iPhone.
 
 ### How do I open a trainer or press a mod's keyboard keys on iPhone?
 
-While a script mod (.asi) runs, a 'Mod keys' button shows at the top of the screen. It lists exactly the keys your mods use (Simple Trainer: F3 opens the menu, Num 8/2 move, Num 5 selects). Hold a key to press it; long-press to pin it next to the button. Shift/Ctrl/Alt stay down after a tap for combinations. Controller shortcuts work through the touch controls and Bluetooth controllers too (Simple Trainer: RB + X), and an iPad keyboard works. When a trainer asks you to type (spawn a car by name, a search), the iPhone keyboard opens by itself; type and tap OK.
+While a script mod (.asi) runs, a 'Mod keys' button shows at the top of the screen. It lists exactly the keys your mods use (Simple Trainer: F3 opens the menu, Num 8/2 move, Num 5 selects). Hold a key to press it; long-press to pin it next to the button. Since v1.5, Settings › Mods › the mod lists its keys: give a key another key, or add your own on-screen button for it (always, in any vehicle, or in one car; pick an icon from All icons…), which also works with the Controller buttons scheme. Controller shortcuts work too (Simple Trainer: RB + X), and an iPad keyboard works. When a trainer asks you to type, the iPhone keyboard opens by itself.
 
 ### I added songs to Self Radio but I can't find the station in the radio wheel
 
@@ -665,7 +725,7 @@ Self Radio needs v1.4.5 and at least 3 songs (Settings › Self Radio lists what
 
 ### My game crashes or looks wrong with mods. Can you fix it?
 
-Mods can cause crashes and glitches, and the port can't fix other people's mods. First try with the Mods folder empty: if the problem is gone, it's the mod (ask in the Mods topic (t.me/fivestarport/10779), with the mod's name and link). Send a log in Crashes & logs only if it also happens without mods. Logs show which mods were active.
+Mods can cause crashes and glitches, and the port can't fix other people's mods. First try with the Mods folder empty: if the problem is gone, it's the mod (ask in the Mods topic (t.me/fivestarport/10779), with the mod's name and link). Report it on fivestarport.site/report/ (with a log from the app) only if it also happens without mods. Logs show which mods were active. Add mods one at a time and start the game after each, so you know which one breaks it, and back up your saves first (GTA V Port › EngineFiles › userdata › Documents › Rockstar Games › GTA V › Default).
 
 ### Self Radio: how do I shuffle or skip a song?
 
@@ -687,7 +747,7 @@ Keyboard and mouse use the game's own PC controls, with PC key prompts. The curs
 
 ### Mac: it says Apple can't check the app for malicious software (or that it's damaged) and won't open
 
-The Mac app isn't notarized by Apple, so macOS asks once. Click Done, then open System Settings › Privacy & Security, scroll down and click Open Anyway next to GTA V Port, and confirm with your password. If it says the app is damaged, the Mac guide has a one-line Terminal fix: https://github.com/kevinerikjs/gta5-macos-port/blob/main/docs/MAC.md. It asks again after each new download.
+The Mac app isn't notarized by Apple, so macOS asks once. Click Done, then open System Settings › Privacy & Security, scroll down and click Open Anyway next to GTA V Port, and confirm with your password. If it says the app is damaged, the Mac guide has a one-line Terminal fix: fivestarport.site/mac/. It asks again after each new download.
 
 ### Mac: where do I put the game files?
 
@@ -709,11 +769,11 @@ Update to the newest version: v1.4.3 fixes the Trackify freeze in The Merryweath
 
 ### My money or the vehicle in my garage isn't saved after I restart. How do I fix it?
 
-Money resetting to $0 after loading a save was fixed in v1.3.4 (money lost before that doesn't come back: use Settings › Cheats › Set money, then save). Since v1.4, Set money sets the game's own balance, so spending lowers it and it survives saving and loading. Cars in garages: police cars are never kept, as in the original game; if a normal car disappears after saving and reloading, send a log (Settings › This device › Send log to the developer, with a short note in "What happened?").
+Money resetting to $0 after loading a save was fixed in v1.3.4 (money lost before that doesn't come back: use Settings › Cheats › Set money, then save). Set money sets the game's own balance, so spending lowers it and it survives saving and loading. Cars in garages: police cars and cars spawned with a trainer are never kept, as in the original game, and nothing is kept without saving before you quit. Since v1.5 you can walk out of a car garage on foot again, and a garage car with mod parts this game doesn't have no longer stops the save from loading.
 
 ### After changing a setting the game shows a black screen or an error (has_lse). How do I fix it?
 
-If a setting made the game unable to start, the app goes back to a working setting on the next launch. If not, set the preset back to the recommended one and Memory cap to Automatic in Settings › Graphics. v1.4.3 fixes a crash after changing the resolution or connecting a TV ("Invalid call_indirect"). If it still happens, send a log right after it happens (Settings › This device › Send log to the developer, with a short note in "What happened?").
+If a setting made the game unable to start, the app goes back to a working setting on the next launch. If not, set the preset back to the recommended one and Memory cap to Automatic in Settings › Graphics. v1.4.3 fixes a crash after changing the resolution or connecting a TV ("Invalid call_indirect"), and v1.4.7 a crash when changing the resolution during play on iPhone and iPad: the change now applies the next time the game starts. If it still happens, send a log right after it happens (Settings › This device › Send log to the developer, with a short note in "What happened?").
 
 ### The game crashes, or the character freezes, after I pause. Why?
 
@@ -751,11 +811,11 @@ Update to the newest version: since v1.4 Sandbox runs smoothly again on 4 GB iPh
 
 ### Why doesn't the dev share a ready-made IPA?
 
-A ready-made IPA is shared now: the newest one is in the Releases topic. You still need your own game files.
+It is shared: the newest IPA is in the Releases topic of the Telegram group (https://t.me/fivestarport/786). You still need your own game files.
 
 ### Is downloading the game files legal, and is it safe for my phone?
 
-The project doesn't share game files and can't advise on getting them. The app itself is open source (MIT) on GitHub and plays offline from your own game files on your phone. Get it only from the Releases topic of the Telegram group or build it yourself: copies from other places can be old or modified.
+The project doesn't share game files and can't advise on getting them. Get the app only from the Releases topic of the Telegram group: it plays offline from your own game files on your phone, and copies from other places can be old or modified.
 
 ### Could Rockstar shut this port down?
 
@@ -763,11 +823,11 @@ It's a fan project, not affiliated with Rockstar or Take-Two. The repository con
 
 ### Does the app collect any data about me?
 
-From v1.4.4 the app sends a few anonymous stats: a random install ID (not your Apple ID), the app version, iPhone model, iOS version and memory, how long you play, average FPS, which mission you start and whether it was failed, engine stops, and which Cheats rows are used. No names, saves, game files, mods' names, location or IP address. The exact list is in docs/STATS.md on GitHub. Logs are only sent when you tap Send log.
+From v1.4.4 the app sends a few anonymous stats: a random install ID (not your Apple ID), the app version, iPhone model, iOS version and memory, how long you play, average FPS, which mission you start and whether it was failed, engine stops, and which Cheats rows are used. No names, saves, game files, mods' names, location or IP address. The exact list is at fivestarport.site/stats/. Logs are only sent when you tap Send log.
 
 ### Is the IPA open source?
 
-Yes, the app's code is open source (MIT) on GitHub. It doesn't include the game.
+Yes: the app's own code is open source (MIT) on GitHub: [gta5-ios-port](https://github.com/kevinerikjs/gta5-ios-port) for iPhone and [gta5-macos-port](https://github.com/kevinerikjs/gta5-macos-port) for Mac. The app doesn't include the game: you use your own game files.
 
 ## Other
 
@@ -803,17 +863,25 @@ It runs the web build's game natively on iPhone: the engine is compiled to ARM64
 
 It's the original GTA V from the web build's game files, running natively on iPhone. Textures are smaller than the PC version.
 
+### The game crashes or stops at every load when the language is Simplified Chinese
+
+Fixed in v1.4.7, so update. This game build's Simplified Chinese text makes the game stop while loading, so with Simplified Chinese picked, the game's own text now shows in Traditional Chinese; the app's menus stay in Simplified Chinese. On older versions, pick another language in Settings › Language.
+
 ### What is this debug message on screen?
 
 Texts showing as "... missing" were fixed in v1.4, and since v1.4.2 help boxes the game files have no text for (like "HELP_DCK missing") simply don't show. They were harmless. If you see another message, send a log (Settings › This device › Send log to the developer, with a short note in "What happened?").
 
+### Does the port work on the iPhone Duo (the foldable)?
+
+Yes. Since v1.5 the game fills the Duo's inner screen, keeps running when you fold or unfold it during play, and keeps the touch controls within thumb reach on the inner screen. Older versions run in a 16:9 box with black bars there. If something looks wrong on a Duo, send a log (Settings › This device › Send log to the developer); we haven't had one in hand yet.
+
+### The game stopped and the screen says why (damaged files, a car layout mod, too many add-ons). What do I do?
+
+Since v1.5 the stop screen names the cause and what to do. A game file that can't be read: check the game files in Settings › Game files and keep a few GB of storage free. A car layout mod or too many add-on cars: start without that mod (the screen offers it), or remove some add-on cars. A mod made for another game version (GTA V Enhanced): use the Legacy version of the mod. Otherwise send a log right after it happens.
+
 ## Known issues
 
 Bugs we know about and are working on.
-
-### I can't change clothes or get a haircut, or doing so crashes the game. Why?
-
-Changing clothes works in Story mode, and shop menus like the barber and Los Santos Customs have arrows on the touch controls since v1.4.2. The barber working only once (then the chair does nothing) is a known issue. If it happens, send a log right after it happens (Settings › This device › Send log to the developer, with a short note in "What happened?").
 
 ### With a controller, R2/RT doesn't accelerate the car. How do I fix it?
 
@@ -822,3 +890,7 @@ Right trigger not accelerating on some controllers is a known issue. v1.4 logs t
 ### How do I fix bad audio or missing sound effects?
 
 Missing sound effects for some players is a known issue. Since v1.4.3 the sound also comes back after interruptions (calls, alarms) that used to leave the game silent, and the game plays alongside your own music app. Faint or identical engine sounds come from the small web game files (see the engine sounds answer). If sound is still missing, send a log right after it happens (Settings › This device › Send log to the developer, with a short note in "What happened?").
+
+### The game freezes when I change graphics in the game's pause menu and it asks to restart
+
+Change graphics in the app's own Settings › Graphics instead (the ⚙️ button, or the pause menu's Settings button). The game's own restart prompt in its pause menu freezes in the port: a known issue.
