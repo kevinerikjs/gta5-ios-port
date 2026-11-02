@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-/// Sends the app's logs to the developer (5★ Port Builder site, which forwards them on Telegram).
+/// Sends the app's logs to the developer (the website, which forwards them on Telegram).
 enum LogUploader {
     static let endpoint = URL(string: "https://fivestarport.vercel.app/api/log")!
     /// The site accepts up to 4 MB, so each log is trimmed to 1.8 MB: its start (device, settings,

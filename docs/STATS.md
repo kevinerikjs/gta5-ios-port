@@ -17,4 +17,4 @@ Your saves, your game files, your mods' names or files, your logs, your location
 
 ## Where it goes
 
-The app sends the stats to the builder site (fivestarport.vercel.app/api/stats). The site checks every item against the list above, drops anything else, and passes them on to the developer's stats service, PostHog (EU). The code is in this repository: [app/App/Analytics.swift](../app/App/Analytics.swift). Logs you send with **Send log to the developer** are separate and only sent when you tap Send.
+The app sends the stats to the project's website (fivestarport.site/api/stats). The site checks every item against the list above, drops anything else, and passes them on to the developer's stats service, PostHog (EU). The code is in this repository: [app/App/Analytics.swift](../app/App/Analytics.swift). Logs you send with **Send log to the developer** are separate and only sent when you tap Send.

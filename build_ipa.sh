@@ -6,7 +6,7 @@
 #   The app asks for the extra-memory entitlements; sideloaders drop what an account can't grant.
 #   --free  leave them out, for an installer that refuses the app (--paid is still accepted)
 #   --lite  the Lite build for iPhones with little memory (about 4 GB of RAM): GTA5Port-Lite.ipa
-# Needs: an Apple Silicon Mac (or the GitHub Actions workflow), Xcode, xcodegen.
+# Needs: an Apple Silicon Mac, Xcode, xcodegen.
 set -euo pipefail
 SERVER=""
 MIRROR=""

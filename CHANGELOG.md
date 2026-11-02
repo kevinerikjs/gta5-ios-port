@@ -120,7 +120,7 @@ Other bug fixes and improvements.
 - **Fuller engine sounds with your own PC files**: the Mods guide explains how to use your own PC copy's audio archives from the Mods folder ([docs/MODS.md](docs/MODS.md#your-own-pc-audio-files)).
 
 ### Languages
-- **Translate the app** on the builder website's Translate page ([docs/TRANSLATING.md](docs/TRANSLATING.md)); the app's language picker lists the new languages. First community translations: Vietnamese by @lekhoi2811 and Arabic by @uk9_v (the rest falls back to English until more lines are translated).
+- **Translate the app** on the website's Translate page ([docs/TRANSLATING.md](docs/TRANSLATING.md)); the app's language picker lists the new languages. First community translations: Vietnamese by @lekhoi2811 and Arabic by @uk9_v (the rest falls back to English until more lines are translated).
 
 ### Stability and performance
 - **Crash after a resolution change or connecting a TV**: the main thread rebuilt graphics objects while the render thread could still be drawing with them ("Invalid call_indirect"); it now waits for the render thread first.
@@ -191,9 +191,8 @@ Thanks to @abtastic-hub for the reports behind the trailer, Handler, Chop and en
 - **The folder picker explains** how to choose the game folder.
 - **New button icons** for every touch button.
 - **A "Loading…" note** shows during long loads after a death or between story scenes, so they don't look like a freeze.
-- **Builder site:** an expired GitHub sign-in sends you back to sign in instead of stopping at "Bad credentials" (#18).
 
-Thanks to @k49kg9xmsd-prog, @abtastic-hub, @mmts7hrnb5-jpg, @Blue7366 and @sonubhutani1979-afk for the issues behind these fixes (#3, #15, #16, #18, #19), and to everyone in the Telegram group who sent logs and screenshots.
+Thanks to @k49kg9xmsd-prog, @abtastic-hub, @mmts7hrnb5-jpg and @Blue7366 for the issues behind these fixes (#3, #15, #16, #19), and to everyone in the Telegram group who sent logs and screenshots.
 
 ## v1.3.4
 - **Story money no longer resets to $0.** Right after a save loaded, a game script set every character's cash to $0, so each save after that kept $0. The app now ignores that one write while a save loads (#10). Saves made after the bug already hold $0, so money lost before this update doesn't come back.
@@ -208,10 +207,9 @@ Thanks to @k49kg9xmsd-prog, @abtastic-hub, @mmts7hrnb5-jpg, @Blue7366 and @sonub
 - **Game files that fail to read are named in the log**, and a read the system interrupted is retried instead of failing. Thanks to GitHub user @m1337v (#13).
 - **Less texture memory on iPhones.** The most common texture type is now stored in a format the iPhone's GPU reads directly, at half the memory of before.
 - **Audio uses a little less CPU:** the game's music and speech are decoded natively.
-- **Extra memory is asked for by default** in the Mac script, the GitHub workflow and the builder site; use `--free` (or untick the box) for a free Apple ID.
-- **Builder site:** coming back after a new version is out now offers to build it, instead of downloading your previous build again (#14).
+- **Extra memory is asked for by default** by the Mac script; use `--free` for a free Apple ID.
 
-Thanks to @m1337v for the airplane right stick and the file read fix (#12, #13), and to @aliiscoding2122, @k49kg9xmsd-prog and @phakamaec for the issues behind the money fix, the pause and the builder fix (#10, #11, #14).
+Thanks to @m1337v for the airplane right stick and the file read fix (#12, #13), and to @aliiscoding2122 and @k49kg9xmsd-prog for the issues behind the money fix and the pause (#10, #11).
 
 ## v1.3.3
 - **Runs on iOS 16.** The app now installs on iOS 16 as well as iOS 17 and later.
@@ -308,7 +306,6 @@ Thanks to everyone who sent logs with exact failures and their own analysis: tho
 - Any folder above the game folder can be picked; folder picks are logged.
 
 ## v1.2
-- **Build from your iPhone** with [5★ Port Builder](https://fivestarport.vercel.app), no computer needed.
 - **Play from a folder on your iPhone**: no server, nothing streams while playing.
 - New **Max** preset, every preset selectable, separate resolution setting that changes while playing.
 - After a launch that runs out of memory, the next start explains it and lowers the settings.
@@ -320,4 +317,4 @@ Thanks to everyone who sent logs with exact failures and their own analysis: tho
 - **Download all game files** to the phone (streaming route).
 
 ## v1.0
-- First release: build the iPhone app from your own game files with GitHub Actions or a Mac, streaming the files from your computer over Tailscale.
+- First release: build the iPhone app from your own game files on a Mac, streaming the files from your computer over Tailscale.
