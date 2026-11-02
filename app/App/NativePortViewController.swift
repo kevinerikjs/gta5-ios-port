@@ -310,6 +310,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     private var lastTouchInputTrace = ""
     private var movementProofStarted = false
     private var proofController: GCController?
+    private let controllerFeedback = ControllerFeedback()
     private var proofInputSamples = 0
     private var proofInputActive = false
     #if targetEnvironment(simulator) || targetEnvironment(macCatalyst)
@@ -464,6 +465,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         UIApplication.shared.isIdleTimerDisabled = true
+        controllerFeedback.log = { [weak self] in self?.appendLog($0) }
         let device = MTLCreateSystemDefaultDevice()
         metalView = MTKView(frame: .zero, device: device)
         queue = device?.makeCommandQueue()
@@ -1282,7 +1284,23 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         }
     }
 
-    @objc private func controllerChanged() { pollController() }
+    /// The gamepad to play with: the one the player touched last, never the PS VR2 Sense pair
+    /// (visionOS lists them as a gamepad too) while another controller is connected.
+    static func activeController() -> GCController? {
+        let gamepads = GCController.controllers().filter { $0.extendedGamepad != nil }
+        // The Sense pair keeps generating events (tracking, drift) and would keep stealing
+        // "current"; only fall back to it when nothing else is connected.
+        let real = gamepads.filter { !($0.vendorName ?? "").localizedCaseInsensitiveContains("Sense") }
+        if real.isEmpty { return gamepads.first }
+        if let current = GCController.current, real.contains(where: { $0 === current }) { return current }
+        return real.first
+    }
+
+    @objc private func controllerChanged() {
+        let names = GCController.controllers().map { ($0.vendorName ?? "Gamepad") + ($0.extendedGamepad == nil ? " (no extended gamepad profile)" : "") }
+        appendLog("Controllers: " + (names.isEmpty ? "none" : names.joined(separator: ", ")))
+        pollController()
+    }
 
     // MARK: Folding (iPhone Duo) and other screen size changes
 
@@ -2132,6 +2150,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
             lastControllerPoll = nil
             PGUpdateVirtualPad(PGPadState())
             PGSetMouseFocus(false, false)
+            controllerFeedback.update(controller: Self.activeController(), engineStarted: engineStarted, active: false, leftPull: 0, rightPull: 0)
             wasMouseSwipeActive = false
             inputTestLabel.isHidden = true
             return
@@ -2232,7 +2251,7 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         var hasController = false
         // One look-up per tick (the radio wheel below uses the same pad).
         var connectedPad: GCExtendedGamepad?
-        if let controller = GCController.controllers().first(where: { $0.extendedGamepad != nil }), let pad = controller.extendedGamepad {
+        if let controller = Self.activeController(), let pad = controller.extendedGamepad {
             state = PGPadState(gamepad: pad)
             hasController = true
             connectedPad = pad
@@ -2280,6 +2299,9 @@ final class NativePortViewController: UIViewController, MTKViewDelegate {
         #else
         let testController = false
         #endif
+        // The engine's rumble and the adaptive triggers run on their own 100 Hz clock (ControllerFeedback).
+        controllerFeedback.update(controller: hasController ? Self.activeController() : nil, engineStarted: engineStarted, active: true,
+                                  leftPull: state.leftTrigger, rightPull: state.rightTrigger)
         // With a controller connected the touch controls step aside (Settings › Touch controls).
         // Keyboard and mouse: every frame while the game runs (keys go straight to the game as they change).
         let keyboardMouse = GameSettings.shared.keyboardMouse

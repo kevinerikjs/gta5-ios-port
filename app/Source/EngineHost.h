@@ -172,6 +172,22 @@ int PGInputReadWithin(int action, double ms);
 int PGInputGameReadWithin(int action, double ms);
 /// Presses Start (opens the pause menu, or closes it when open): held for the next three engine frames.
 void PGRequestPauseMenu(void);
+// What the DualSense adaptive triggers are built from (all memory reads): the selected weapon
+// and its GROUP_* hash on foot, the vehicle's speed in m/s when in one.
+typedef struct {
+  uint32_t weaponHash;
+  uint32_t weaponGroup;
+  float speed;
+  float timeBetweenShots;   // seconds, 0 when unknown
+} PGTriggerHints;
+PGTriggerHints PGReadTriggerHints(uint32_t touchContext);
+// What the controller's light bar is built from: the player's wanted level and the model hash of
+// the ped being played (player_zero/one/two for Michael, Franklin, Trevor).
+typedef struct {
+  uint32_t wantedLevel;
+  uint32_t modelHash;
+} PGLightHints;
+PGLightHints PGReadLightHints(void);
 // Keyboard and mouse, through the game's own PC input (the block the browser build wrote): key
 // state bytes indexed by Windows virtual-key code, and mouse words after them.
 void PGSetKey(uint8_t virtualKey, bool down);
@@ -197,6 +213,9 @@ typedef struct {
   float leftX, leftY, rightX, rightY, leftTrigger, rightTrigger;
 } PGPadState;
 void PGUpdateVirtualPad(PGPadState state);
+// Controller rumble from the engine's pad 0 actuators, 0...1: the heavy low-frequency motor and
+// the light high-frequency one (Scripts/prepare_rumble.py). Both zero while nothing is playing.
+void PGReadRumble(float *lowFrequency, float *highFrequency);
 // Existing controller-swipe impulse bridge, consumed on engine input sampling.
 void PGQueueCameraSwipe(float x, float y);
 void PGClearCameraSwipe(void);

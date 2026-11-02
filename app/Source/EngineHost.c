@@ -1070,6 +1070,61 @@ bool PGDebugReadMemory(uint64_t address,void *out,uint64_t length){
  if(!atomic_load(&inputBlock)||address>env.memory.size||length>env.memory.size-address)return false;
  memcpy(out,(const uint8_t *)(void *)env.memory.data+address,length);return true;
 }
+// GET_WEAPONTYPE_GROUP (f62907): binary search of the weapon infos by hash (key at +16).
+static uint64_t pg_weapon_info(const uint8_t *m,uint64_t size,uint32_t hash){
+ uint64_t table;uint16_t infos;
+ if(!hash||!pg_context_u64(m,size,28496576,&table)||!pg_context_u16(m,size,28496584,&infos)||!table)return 0;
+ int lo=0,hi=(int)infos-1;
+ for(int steps=0;lo<=hi&&steps<20;steps++){
+  int mid=(lo+hi)/2;uint64_t candidate;uint32_t key;
+  if(!pg_context_u64(m,size,table+8ull*mid,&candidate)||!candidate||!pg_context_u32(m,size,candidate+16,&key))return 0;
+  if(key==hash)return candidate;
+  if(key<hash)lo=mid+1;else hi=mid-1;
+ }
+ return 0;
+}
+PGTriggerHints PGReadTriggerHints(uint32_t touchContext){
+ PGTriggerHints h={0,0,0,0};
+ if(!atomic_load(&inputBlock))return h;
+ const uint8_t *m=(const uint8_t *)(void *)env.memory.data;const uint64_t size=env.memory.size;
+ uint64_t info,ped,manager,weaponInfo;
+ if(!pg_context_u64(m,size,20159720,&info)||!info||!pg_context_u64(m,size,info+8,&ped)||!ped)return h;
+ // GET_SELECTED_PED_WEAPON (f62955): the weapon manager at ped+4344, its selected hash at +24;
+ // the info's group hash at +92 and, as GET_WEAPON_TIME_BETWEEN_SHOTS (f62994) reads it, the
+ // seconds between shots at +316.
+ if(pg_context_u64(m,size,ped+4344,&manager)&&manager&&pg_context_u32(m,size,manager+24,&h.weaponHash)&&h.weaponHash&&
+    (weaponInfo=pg_weapon_info(m,size,h.weaponHash))){
+  uint32_t raw;float seconds;
+  pg_context_u32(m,size,weaponInfo+92,&h.weaponGroup);
+  if(pg_context_u32(m,size,weaponInfo+316,&raw)){memcpy(&seconds,&raw,4);h.timeBetweenShots=isfinite(seconds)&&seconds>0?seconds:0;}
+ }
+ // CPhysical::GetVelocity (f47065): the collider's velocity (+112) while simulated, else the
+ // entity's own (+560) when flagged at +664.
+ uint64_t vehicle,inst,collider,at=0;uint8_t flag;
+ if(touchContext&&pg_context_u64(m,size,ped+5576,&vehicle)&&vehicle){
+  if(pg_context_u64(m,size,vehicle+80,&inst)&&inst&&pg_context_u64(m,size,inst+80,&collider)&&collider)at=collider+112;
+  else if(pg_context_u8(m,size,vehicle+664,&flag)&&(flag&1))at=vehicle+560;
+  uint32_t x,y,z;
+  if(at&&pg_context_u32(m,size,at,&x)&&pg_context_u32(m,size,at+4,&y)&&pg_context_u32(m,size,at+8,&z)){
+   float fx,fy,fz;memcpy(&fx,&x,4);memcpy(&fy,&y,4);memcpy(&fz,&z,4);
+   const float s=sqrtf(fx*fx+fy*fy+fz*fz);h.speed=isfinite(s)?s:0;
+  }
+ }
+ return h;
+}
+PGLightHints PGReadLightHints(void){
+ PGLightHints h={0,0};
+ if(!atomic_load(&inputBlock))return h;
+ const uint8_t *m=(const uint8_t *)(void *)env.memory.data;const uint64_t size=env.memory.size;
+ uint64_t info,ped,playerInfo,archetype;
+ if(!pg_context_u64(m,size,20159720,&info)||!info||!pg_context_u64(m,size,info+8,&ped)||!ped)return h;
+ // GET_PLAYER_WANTED_LEVEL (f58655): the player info at ped+4328, its CWanted at +2432, the level at +184.
+ if(pg_context_u64(m,size,ped+4328,&playerInfo)&&playerInfo)pg_context_u32(m,size,playerInfo+2432+184,&h.wantedLevel);
+ // GET_ENTITY_MODEL (f50040): the archetype at entity+32 carries the model's name hash at +24.
+ if(pg_context_u64(m,size,ped+32,&archetype)&&archetype)pg_context_u32(m,size,archetype+24,&h.modelHash);
+ if(h.wantedLevel>5)h.wantedLevel=0;
+ return h;
+}
 uint32_t PGCurrentTouchContext(void){
  if(!atomic_load(&inputBlock))return 0;
  return pg_touch_context((const uint8_t *)(void *)env.memory.data,env.memory.size);
@@ -1171,6 +1226,24 @@ void PGUpdateVirtualPad(PGPadState state) {
     (uint64_t)pg_pad_trigger(state.leftTrigger) << 48 | (uint64_t)pg_pad_trigger(state.rightTrigger) << 56;
   atomic_store(&virtualPad, packed);
   atomic_store(&virtualPadActive, true);
+}
+// Controller rumble: rage::ioPad::SetActuatorValue (f10523, Scripts/prepare_rumble.py) delivers
+// both motor intensities for a pad every frame, actuator 0 the heavy low-frequency motor and 1
+// the light one. Pad 0's values are kept for the app's controller haptics.
+static _Atomic uint32_t padActuator[2];
+static _Atomic uint64_t padActuatorSetMS;
+void pg_pad_actuator(w2c_game *instance, uint64_t pad, uint32_t actuator, float value) {
+  (void)instance;
+  if (pad != 12840656 || actuator > 1) return;
+  value = isfinite(value) ? fmaxf(0, fminf(1, value)) : 0;
+  atomic_store(&padActuator[actuator], (uint32_t)lroundf(value * 65535));
+  atomic_store(&padActuatorSetMS, (uint64_t)timeMS(CLOCK_MONOTONIC));
+}
+void PGReadRumble(float *lowFrequency, float *highFrequency) {
+  // The engine stops reporting while paused or loading: a stale value means off.
+  const bool stale = timeMS(CLOCK_MONOTONIC) - (double)atomic_load(&padActuatorSetMS) > 500;
+  *lowFrequency = stale ? 0 : atomic_load(&padActuator[0]) / 65535.f;
+  *highFrequency = stale ? 0 : atomic_load(&padActuator[1]) / 65535.f;
 }
 // SET_PLAYER_TARGETING_MODE (f58997): store menu preference 3, then apply it
 // to the local player. Requested by the host, run here on the engine's own

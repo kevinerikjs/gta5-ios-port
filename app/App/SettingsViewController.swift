@@ -36,6 +36,7 @@ final class SettingsViewController: UITableViewController {
         case touchScheme, tab, swipeLook, swipeAim, stickLook, stickAim
         case targeting, fireAlsoAims, sprintButton, steeringButtons, airplaneRightStick, buttonSize, buttonOpacity, editLayout, hudLayout, minimap, helpText
         case hideTouchWithController, keyboardMouse, inputState, safeZone
+        case rumble, adaptiveTriggers, lightBar
     }
     private var controlsTab: ControlsTab {
         settings.cameraTouchMode == .stick ? .stick : .swipe
@@ -50,7 +51,7 @@ final class SettingsViewController: UITableViewController {
         let scheme: [ControlsRow] = [.touchScheme]
         #endif
         return scheme + [.tab] + camera + [.targeting, .fireAlsoAims, .sprintButton, .steeringButtons, .airplaneRightStick, .buttonSize, .buttonOpacity,
-                                  .editLayout, .hudLayout, .minimap, .helpText, .safeZone, .hideTouchWithController, .keyboardMouse]
+                                  .editLayout, .hudLayout, .minimap, .helpText, .safeZone, .hideTouchWithController, .rumble, .adaptiveTriggers, .lightBar, .keyboardMouse]
     }
 
     @objc private func controlsTabChanged(_ sender: UISegmentedControl) {
@@ -563,6 +564,18 @@ final class SettingsViewController: UITableViewController {
                     self?.settings.keyboardMouse = $0
                     if !$0 { KeyboardMouse.shared.releaseAll() }
                 }
+            case .rumble:
+                content.text = AppLanguage.choose("Rumble")
+                content.secondaryText = AppLanguage.choose("The game's vibration on the controller's own motors")
+                cell.accessoryView = toggle(settings.controllerRumble, label: AppLanguage.choose("Rumble")) { [weak self] in self?.settings.controllerRumble = $0 }
+            case .adaptiveTriggers:
+                content.text = AppLanguage.choose("Adaptive triggers")
+                content.secondaryText = AppLanguage.choose("DualSense: weapon kick and pedal resistance built from the game's state")
+                cell.accessoryView = toggle(settings.adaptiveTriggers, label: AppLanguage.choose("Adaptive triggers")) { [weak self] in self?.settings.adaptiveTriggers = $0 }
+            case .lightBar:
+                content.text = AppLanguage.choose("Light bar")
+                content.secondaryText = AppLanguage.choose("DualSense and DualShock: the character's colour, flashing red and blue when wanted")
+                cell.accessoryView = toggle(settings.controllerLight, label: AppLanguage.choose("Light bar")) { [weak self] in self?.settings.controllerLight = $0 }
             case .inputState:
                 content.text = AppLanguage.choose("Input device (live test)")
                 let device = PGLastInputDevice()
